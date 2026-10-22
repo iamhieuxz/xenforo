@@ -20,13 +20,13 @@ from engine import CrawlerEngine
 # Mỗi loại thông báo một màu riêng, tất cả đủ tương phản trên nền BG_INPUT.
 LOG_COLORS = {
     "error":   "#f87171",   # [-] lỗi
-    "summary": "#fb923c",   # [!] cảnh báo, tệp lỗi đường truyền
+    "summary": "#fbbf24",   # [!] cảnh báo, tệp lỗi đường truyền
     "success": "#4ade80",   # [✓] [+] xong
-    "info":    "#38bdf8",   # [*] đang chạy
-    "system":  "#22d3ee",   # [*] dòng khởi động app
-    "bulk":    "#c084fc",   # cập nhật đa luồng
-    "skip":    "#94a3b8",   # [•] trùng khớp, bỏ qua
-    "dim":     "#64748b",   # dấu phân cách, dòng chưa phân loại
+    "info":    "#60a5fa",   # [*] đang chạy
+    "system":  "#38bdf8",   # [*] dòng khởi động app
+    "bulk":    "#a78bfa",   # cập nhật đa luồng
+    "skip":    "#8b95a5",   # [•] trùng khớp, bỏ qua
+    "dim":     "#8b95a5",   # dấu phân cách, dòng chưa phân loại
 }
 
 # Dấu mở đầu dòng -> tag. Engine/downloader đã viết sẵn dấu này ở mọi tin,
@@ -60,25 +60,38 @@ def log_tag(message, tag=None):
 class XenForoScannerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("XENFORO ULTIMATE - V72 ENGINE")
-        self.root.geometry("960x920")
+        self.root.title("XENFORO CRAWLER - V72")
+        self.root.geometry("1060x820")
+        self.root.minsize(760, 560)
 
-        self.BG_MAIN = "#090d16"
-        self.BG_CARD = "#141a29"
-        self.BG_INPUT = "#1c2438"
-        self.FG_TEXT = "#ffffff"
-        self.FG_SUB = "#707e94"
+        # Tông tối: nền lạnh trung tính (không tím/xanh dương AI), 1 accent xanh
+        # bão hòa vừa phải dùng cho hành động chính. Màu nhấn thứ chỉ xuất hiện
+        # trong log và trạng thái lỗi, không tranh với nút bấm.
+        self.BG_MAIN = "#0b0d12"     # nền sâu nhất, không dùng #000 thuần
+        self.BG_CARD = "#12151c"     # bề mặt thẻ
+        self.BG_INPUT = "#191d26"    # ô nhập, nổi nhẹ trên nền thẻ
+        self.BORDER = "#252b37"      # viền mảnh thay cho khối đặc
+        self.FG_TEXT = "#e8eaed"
+        self.FG_SUB = "#8b95a5"      # nhãn phụ, đủ tương phản trên nền thẻ
 
-        self.COLOR_GREEN = "#4ade80"
-        self.COLOR_BLUE = "#38bdf8"
-        self.COLOR_RED = "#f87171"
-        self.COLOR_ORANGE = "#fbbf24"
-        self.COLOR_DISABLED = "#2e394e"
+        # Accent tối hơn bản chuẩn để chữ trắng đạt 4.5:1 (bản #3b82f6 chỉ 3.68:1).
+        self.ACCENT = "#2563eb"      # hành động chính
+        self.ACCENT_HOVER = "#3b82f6"
+        self.COLOR_GREEN = "#22c55e"  # hoàn tất
+        self.COLOR_RED = "#ef4444"    # dừng khẩn cấp / lỗi
+        self.COLOR_ORANGE = "#f59e0b" # cập nhật đa luồng
+        self.COLOR_DISABLED = "#1e222b"
+        self.FG_ON_ACCENT = "#ffffff"
 
-        self.FONT_TITLE = ("Segoe UI", 15, "bold")
-        self.FONT_CARD_HEADER = ("Segoe UI", 10, "bold")
+        self.FONT_TITLE = ("Segoe UI", 16, "bold")
+        self.FONT_CARD_HEADER = ("Segoe UI", 9, "bold")
         self.FONT_MAIN = ("Segoe UI", 10)
         self.FONT_BTN = ("Segoe UI", 10, "bold")
+        self.FONT_MONO = ("Consolas", 10)
+
+        # Giữ N dòng gốc để lọc/copy lại được. Quá nhiều thì nhật ký phình to và
+        # vẽ lại chậm; 1000 dòng là quá đủ để đọc lại một phiên quét.
+        self.LOG_KEEP = 1000
 
         self.root.configure(bg=self.BG_MAIN)
         self._enable_dark_titlebar()
@@ -87,6 +100,11 @@ class XenForoScannerApp:
         self.download_dir = config.DOWNLOAD_DIR
         self.current_loop = None
         self.engine = None
+        self._had_error = False    # run_async_engine set khi engine log lỗi
+        self._last_detail = ""     # dòng phụ dưới trạng thái, ví dụ "12 ảnh, 3 lỗi"
+        self._n_image = 0
+        self._n_video = 0
+        self._n_error = 0
 
         self._resolve_dir()
         self.cache = MediaCache(os.path.join(self.download_dir, "crawler_cache.db"))
@@ -156,22 +174,39 @@ class XenForoScannerApp:
             return 0
 
     def _build_ui(self):
-        header = tk.Frame(self.root, bg=self.BG_MAIN, padx=25, pady=15)
+        header = tk.Frame(self.root, bg=self.BG_MAIN, padx=24, pady=18)
         header.pack(fill="x")
-        tk.Label(header, text="What's up, Crawler Engine", bg=self.BG_MAIN, fg=self.FG_TEXT,
+        # Cột trái tiêu đề, cột phải trạng thái: dùng weight để trạng thái luôn
+        # bám mép phải khi cửa sổ co giãn.
+        header.columnconfigure(0, weight=1)
+
+        title_box = tk.Frame(header, bg=self.BG_MAIN)
+        title_box.grid(row=0, column=0, sticky="w")
+        tk.Label(title_box, text="XENFORO CRAWLER", bg=self.BG_MAIN, fg=self.FG_TEXT,
                  font=self.FONT_TITLE).pack(anchor="w")
-        tk.Label(header, text="Dynamic Expansion Core • Playwright Native Fetch • Local Validator",
+        tk.Label(title_box, text="Playwright Native Fetch · Cache SQLite · Dừng khẩn cấp",
                  bg=self.BG_MAIN, fg=self.FG_SUB, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
-        grid = tk.Frame(self.root, bg=self.BG_MAIN, padx=20)
-        grid.pack(fill="x", pady=5)
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
+        state_box = tk.Frame(header, bg=self.BG_MAIN)
+        state_box.grid(row=0, column=1, sticky="e", padx=(20, 4))
+        self.lbl_state = tk.Label(state_box, text="SẴN SÀNG", bg=self.BG_MAIN, fg=self.FG_SUB,
+                                  font=("Segoe UI", 10, "bold"))
+        self.lbl_state.pack(anchor="e")
+        self.lbl_progress = tk.Label(state_box, text="", bg=self.BG_MAIN, fg=self.FG_SUB,
+                                     font=("Segoe UI", 9))
+        self.lbl_progress.pack(anchor="e", pady=(2, 0))
 
-        card_config = tk.Frame(grid, bg=self.BG_CARD, padx=20, pady=15)
-        card_config.grid(row=0, column=0, sticky="nwes", padx=(0, 10))
-        tk.Label(card_config, text="🎯 TARGET INFORMATION", bg=self.BG_CARD, fg=self.COLOR_GREEN,
-                 font=self.FONT_CARD_HEADER).pack(anchor="w", pady=(0, 10))
+        tk.Frame(self.root, bg=self.BORDER, height=1).pack(fill="x", padx=24, pady=(10, 0))
+
+        grid = tk.Frame(self.root, bg=self.BG_MAIN, padx=24, pady=14)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1, uniform="cards")
+        grid.columnconfigure(1, weight=1, uniform="cards")
+
+        card_config = tk.Frame(grid, bg=self.BG_CARD, padx=18, pady=16,
+                               highlightbackground=self.BORDER, highlightthickness=1)
+        card_config.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        self._card_header(card_config, "THÔNG TIN ĐỐI TƯỢNG", self.ACCENT)
 
         self.cmb_box_url = self._combo(card_config, "Link Chuyên Mục (Box URL)",
                                        config.BOX_PRESETS[0], config.BOX_PRESETS)
@@ -179,57 +214,120 @@ class XenForoScannerApp:
                                        self._default_user(), self.local_users.names())
         self.ent_thread_url = self._entry(card_config, "Nhập Link Bài Viết (URL)", "")
 
-        card_control = tk.Frame(grid, bg=self.BG_CARD, padx=20, pady=15)
-        card_control.grid(row=0, column=1, sticky="nwes", padx=(10, 0))
-        tk.Label(card_control, text="🛠️ SYSTEM CONTROLS", bg=self.BG_CARD, fg=self.COLOR_BLUE,
-                 font=self.FONT_CARD_HEADER).pack(anchor="w", pady=(0, 10))
+        card_control = tk.Frame(grid, bg=self.BG_CARD, padx=18, pady=16,
+                                highlightbackground=self.BORDER, highlightthickness=1)
+        card_control.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self._card_header(card_control, "ĐIỀU KHIỂN", self.FG_SUB)
 
         btn_grid = tk.Frame(card_control, bg=self.BG_CARD)
         btn_grid.pack(fill="x", pady=(0, 8))
-        btn_grid.columnconfigure(0, weight=1)
-        btn_grid.columnconfigure(1, weight=1)
+        btn_grid.columnconfigure(0, weight=1, uniform="b")
+        btn_grid.columnconfigure(1, weight=1, uniform="b")
 
-        self.btn_download_user = tk.Button(btn_grid, text="Quét 1 User", bg=self.COLOR_GREEN, fg=self.BG_MAIN,
-                                           font=self.FONT_BTN, bd=0, relief="flat", cursor="hand2", pady=10,
-                                           command=self.start_single_crawl_thread)
+        self.btn_download_user = self._button(btn_grid, "Quét 1 User", self.ACCENT,
+                                              command=self.start_single_crawl_thread)
         self.btn_download_user.grid(row=0, column=0, sticky="we", padx=(0, 4))
 
-        self.btn_download_link = tk.Button(btn_grid, text="Quét 1 Thớt", bg=self.COLOR_BLUE, fg=self.BG_MAIN,
-                                           font=self.FONT_BTN, bd=0, relief="flat", cursor="hand2", pady=10,
-                                           command=self.start_link_crawl_thread)
+        self.btn_download_link = self._button(btn_grid, "Quét 1 Thớt", self.ACCENT,
+                                             command=self.start_link_crawl_thread)
         self.btn_download_link.grid(row=0, column=1, sticky="we", padx=(4, 0))
 
-        self.btn_stop = tk.Button(card_control, text="Dừng Khẩn Cấp Tức Thời", bg=self.COLOR_DISABLED,
-                                  fg=self.FG_TEXT, font=self.FONT_BTN, bd=0, relief="flat", cursor="hand2",
-                                  pady=10, state="disabled", command=self.stop_crawl)
+        self.btn_stop = self._button(card_control, "Dừng khẩn cấp", self.COLOR_DISABLED,
+                                    fg=self.FG_SUB, command=self.stop_crawl)
+        self.btn_stop.configure(state="disabled")
         self.btn_stop.pack(fill="x", pady=(0, 8))
 
-        self.btn_update_all = tk.Button(card_control, text="Kích Hoạt Cập Nhật Tổng Lớn (Bulk Update)",
-                                        bg=self.COLOR_ORANGE, fg=self.BG_MAIN, font=self.FONT_BTN, bd=0,
-                                        relief="flat", cursor="hand2", pady=11,
-                                        command=self.start_update_all_thread)
+        self.btn_update_all = self._button(card_control, "Cập nhật toàn bộ User", self.BG_INPUT,
+                                           fg=self.FG_TEXT,
+                                           command=self.start_update_all_thread)
         self.btn_update_all.pack(fill="x")
 
-        card_monitor = tk.Frame(self.root, bg=self.BG_CARD, padx=20, pady=15)
-        card_monitor.pack(fill="both", expand=True, padx=20, pady=(15, 20))
-        tk.Label(card_monitor, text="🖥️ TERMINAL OUTPUT MONITOR", bg=self.BG_CARD, fg=self.FG_SUB,
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 8))
+        tk.Frame(self.root, bg=self.BORDER, height=1).pack(fill="x", padx=24, pady=(14, 0))
+
+        card_monitor = tk.Frame(self.root, bg=self.BG_CARD, padx=18, pady=14,
+                                highlightbackground=self.BORDER, highlightthickness=1)
+        card_monitor.pack(fill="both", expand=True, padx=24, pady=(12, 22))
+        card_monitor.columnconfigure(0, weight=1)
+        card_monitor.rowconfigure(1, weight=1)
+
+        log_bar = tk.Frame(card_monitor, bg=self.BG_CARD)
+        log_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        tk.Label(log_bar, text="NHẬT KÝ", bg=self.BG_CARD, fg=self.FG_SUB,
+                 font=self.FONT_CARD_HEADER).pack(side="left")
+
+        log_tools = tk.Frame(log_bar, bg=self.BG_CARD)
+        log_tools.pack(side="right")
+        self.ent_filter = tk.Entry(log_tools, bg=self.BG_INPUT, fg=self.FG_TEXT,
+                                   insertbackground=self.FG_TEXT, font=self.FONT_MAIN, bd=0,
+                                   highlightthickness=1, highlightbackground=self.BORDER,
+                                   highlightcolor=self.ACCENT, width=18)
+        self.ent_filter.pack(side="left", padx=(0, 6), ipady=4, ipadx=6)
+        self.ent_filter.bind("<KeyRelease>", lambda e: self._apply_filter())
+        tk.Label(log_tools, text="Lọc", bg=self.BG_CARD, fg=self.FG_SUB,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+
+        self.btn_copy_log = self._button(log_tools, "Sao chép", self.BG_INPUT, fg=self.FG_TEXT,
+                                        pady=4, padx=10, command=self.copy_log)
+        self.btn_copy_log.pack(side="left", padx=(0, 6))
+        self.btn_clear_log = self._button(log_tools, "Xóa", self.BG_INPUT, fg=self.FG_TEXT,
+                                          pady=4, padx=10, command=self.clear_log)
+        self.btn_clear_log.pack(side="left")
 
         self.log_box = scrolledtext.ScrolledText(card_monitor, state='disabled', wrap='word',
-                                                 bg=self.BG_INPUT, fg=self.FG_TEXT, font=("Consolas", 10),
-                                                 bd=0, padx=12, pady=12)
-        self.log_box.pack(fill="both", expand=True)
+                                                 bg=self.BG_INPUT, fg=self.FG_TEXT,
+                                                 font=self.FONT_MONO, bd=0,
+                                                 padx=12, pady=10, height=12,
+                                                 highlightthickness=1,
+                                                 highlightbackground=self.BORDER)
+        self.log_box.grid(row=1, column=0, sticky="nsew")
         for tag, color in LOG_COLORS.items():
-            self.log_box.tag_configure(tag, foreground=color, font=("Consolas", 10, "bold"))
-        self.log_box.tag_configure("dim", foreground=LOG_COLORS["dim"], font=("Consolas", 10))
+            self.log_box.tag_configure(tag, foreground=color,
+                                       font=("Consolas", 10, "bold"))
+        self.log_box.tag_configure("dim", foreground=LOG_COLORS["dim"], font=self.FONT_MONO)
+        # Giữ toàn bộ dòng gốc để lọc/copy lại được, vẽ lại theo bộ lọc hiện tại.
+        self._log_lines = []
+
+    def _card_header(self, parent, text, color):
+        """Tiêu đề thẻ: chữ nhỏ, giãn chữ, không emoji."""
+        tk.Label(parent, text=text, bg=self.BG_CARD, fg=color,
+                 font=self.FONT_CARD_HEADER).pack(anchor="w", pady=(0, 12))
+
+    def _button(self, parent, text, bg, fg=None, command=None, pady=9, padx=10):
+        """Nút phẳng, có phản hồi hover/active để bấm không bị cảm giác chết."""
+        btn = tk.Button(parent, text=text, bg=bg, fg=fg or self.FG_ON_ACCENT,
+                        font=self.FONT_BTN, bd=0, relief="flat", cursor="hand2",
+                        pady=pady, padx=padx, activebackground=bg,
+                        activeforeground=fg or self.FG_ON_ACCENT, command=command)
+        btn.bind("<Enter>", lambda e, b=btn, c=bg: self._hover(b, c, True))
+        btn.bind("<Leave>", lambda e, b=btn, c=bg, f=fg: self._hover(b, c, False, f))
+        btn._base_bg = bg
+        btn._base_fg = fg or self.FG_ON_ACCENT
+        return btn
+
+    def _hover(self, btn, base, entering, fg=None):
+        """Hover đổi nền sang bản tối hơn, không làm nhạt.
+
+        Làm nhạt sẽ kéo tỷ lệ chữ trắng xuống dưới 4.5:1, nên hướng ngược lại:
+        tối đi một chút. Nút disabled không đổi màu.
+        """
+        if str(btn.cget("state")) == "disabled":
+            return
+        btn.config(bg=self._shift(base, -18) if entering else base)
+
+    def _shift(self, hex_color, amount):
+        """Dịch mọi kênh theo amount (âm = tối, dương = sáng), giữ tỷ lệ kênh."""
+        hex_color = hex_color.lstrip("#")
+        r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+        clamp = lambda v: max(0, min(v + amount, 255))
+        return "#%02x%02x%02x" % (clamp(r), clamp(g), clamp(b))
 
     def _entry(self, parent, label, initial):
         tk.Label(parent, text=label, bg=self.BG_CARD, fg=self.FG_SUB,
                  font=("Segoe UI", 9)).pack(anchor="w")
         ent = tk.Entry(parent, bg=self.BG_INPUT, fg=self.FG_TEXT, insertbackground=self.FG_TEXT,
                        font=self.FONT_MAIN, bd=0, highlightthickness=1,
-                       highlightbackground=self.BG_INPUT, highlightcolor=self.COLOR_GREEN)
-        ent.pack(fill="x", pady=(4, 10), ipady=6, ipadx=5)
+                       highlightbackground=self.BORDER, highlightcolor=self.ACCENT)
+        ent.pack(fill="x", pady=(4, 12), ipady=7, ipadx=6)
         if initial:
             ent.insert(0, initial)
         return ent
@@ -266,16 +364,16 @@ class XenForoScannerApp:
         combo.configure(style="Dark.TCombobox")
         # Dropdown listbox nằm ngoài style combobox, phải tô riêng theo theme.
         s.configure("Dark.TCombobox.Listbox", background=self.BG_INPUT,
-                    foreground=self.FG_TEXT, selectbackground=self.COLOR_GREEN,
-                    selectforeground=self.BG_MAIN, borderwidth=0)
+                    foreground=self.FG_TEXT, selectbackground=self.ACCENT,
+                    selectforeground=self.FG_ON_ACCENT, borderwidth=0)
         try:
             # PopdownWindow trả về ĐƯỜNG DẪN widget đầy đủ dạng chuỗi, ví dụ
             # '.!frame.!combobox.popdown'. root.nametowwidget() dùng đúng dạng này.
             lst = "%s.f.l" % combo.tk.call("ttk::combobox::PopdownWindow", combo)
             combo.tk.call(lst, "configure", "-background", self.BG_INPUT,
                           "-foreground", self.FG_TEXT,
-                          "-selectbackground", self.COLOR_GREEN,
-                          "-selectforeground", self.BG_MAIN,
+                          "-selectbackground", self.ACCENT,
+                          "-selectforeground", self.FG_ON_ACCENT,
                           "-borderwidth", 0, "-highlightthickness", 0)
         except tk.TclError:
             pass
@@ -286,13 +384,103 @@ class XenForoScannerApp:
 
     def _safe_log(self, message, tag=None):
         try:
+            tag = log_tag(message, tag)
+            self._log_lines.append((message, tag))
+            if len(self._log_lines) > self.LOG_KEEP:
+                self._log_lines = self._log_lines[-self.LOG_KEEP:]
+            self._track_stats(message, tag)
+            needle = self.ent_filter.get().strip().lower() if self.ent_filter.winfo_exists() else ""
+            if needle and needle not in message.lower():
+                return                      # đang lọc -> dòng không khớp bị ẩn
             self.log_box.configure(state='normal')
-            self.log_box.insert(tk.END, message + "\n", log_tag(message, tag))
+            self.log_box.insert(tk.END, message + "\n", tag)
             num_lines = int(self.log_box.index('end-1c').split('.')[0])
-            if num_lines > 1000:
-                self.log_box.delete("1.0", f"{num_lines - 1000}.0")
+            if num_lines > self.LOG_KEEP:
+                self.log_box.delete("1.0", f"{num_lines - self.LOG_KEEP}.0")
             self.log_box.configure(state='disabled')
             self.log_box.yview(tk.END)
+        except tk.TclError:
+            pass
+
+    def _track_stats(self, message, tag):
+        """Bóc số liệu từ dòng log để đổ vào dòng phụ dưới trạng thái.
+
+        Engine đã in sẵn số liệu ở dòng tiến độ qua count_files(), ví dụ
+        '8 ảnh và 2 video'. Đếm ở đây thay vì sửa engine: không đụng tầng crawl,
+        chỉ đọc chuỗi nó đã in.
+        """
+        if tag in ("error", "summary") and message.lstrip().startswith("["):
+            self._had_error = True
+        m = re.search(r"(\d+)\s+ảnh", message)
+        if m:
+            self._n_image = int(m.group(1))
+        m = re.search(r"(\d+)\s+video", message)
+        if m:
+            self._n_video = int(m.group(1))
+        # count_files() gọi nhóm thứ ba là "tệp", và số lỗi đường truyền nằm ở
+        # dòng "[!] ... 3 tệp lỗi" chứ không phải "3 lỗi".
+        m = re.search(r"(\d+)\s+tệp lỗi", message)
+        if m:
+            self._n_error = int(m.group(1))
+        elif re.search(r"tệp lỗi", message):
+            self._n_error = 1
+        parts = []
+        if self._n_image or self._n_video:
+            parts.append(f"{self._n_image} ảnh, {self._n_video} video")
+        if self._n_error:
+            parts.append(f"{self._n_error} lỗi")
+        if not parts:
+            return
+        self._last_detail = " · ".join(parts)
+        # Chỉ cập nhật dòng phụ khi đang chạy; khi xong _safe_change ghi trạng thái riêng.
+        if self.stop_event is not None and not self.stop_event.is_set():
+            self._set_status(self.lbl_state.cget("text"), None, self._last_detail)
+
+    def _apply_filter(self):
+        """Vẽ lại log từ danh sách gốc theo từ khoá lọc hiện tại."""
+        needle = self.ent_filter.get().strip().lower()
+        try:
+            self.log_box.configure(state='normal')
+            self.log_box.delete("1.0", tk.END)
+            for message, tag in self._log_lines:
+                if not needle or needle in message.lower():
+                    self.log_box.insert(tk.END, message + "\n", tag)
+            self.log_box.configure(state='disabled')
+            self.log_box.yview(tk.END)
+        except tk.TclError:
+            pass
+
+    def copy_log(self):
+        """Sao chép những gì đang hiện (đã lọc) để dán đi hỏi lỗi."""
+        try:
+            text = self.log_box.get("1.0", "end-1c")
+            if not text.strip():
+                self.log("[-] Nhật ký đang trống, không có gì để sao chép.", "error")
+                return
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            n = len(self._log_lines)
+            self.log(f"[✓] Đã sao chép {n} dòng nhật ký vào clipboard.", "system")
+        except tk.TclError:
+            pass
+
+    def clear_log(self):
+        try:
+            self._log_lines = []
+            self.log_box.configure(state='normal')
+            self.log_box.delete("1.0", tk.END)
+            self.log_box.configure(state='disabled')
+        except tk.TclError:
+            pass
+
+    def set_status(self, text, color=None, detail=""):
+        """Cập nhật trạng thái góc phải. Gọi từ thread engine qua after()."""
+        self.root.after(0, self._set_status, text, color, detail)
+
+    def _set_status(self, text, color=None, detail=""):
+        try:
+            self.lbl_state.config(text=text, fg=color or self.FG_SUB)
+            self.lbl_progress.config(text=detail)
         except tk.TclError:
             pass
 
@@ -303,11 +491,13 @@ class XenForoScannerApp:
         if running:
             for btn in (self.btn_download_user, self.btn_download_link, self.btn_update_all):
                 btn.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB)
-            self.btn_stop.config(state="normal", bg=self.COLOR_RED, fg=self.FG_TEXT)
+            self.btn_stop.config(state="normal", bg=self.COLOR_RED, fg=self.FG_ON_ACCENT)
         else:
-            self.btn_download_user.config(state="normal", bg=self.COLOR_GREEN, fg=self.BG_MAIN)
-            self.btn_download_link.config(state="normal", bg=self.COLOR_BLUE, fg=self.BG_MAIN)
-            self.btn_update_all.config(state="normal", bg=self.COLOR_ORANGE, fg=self.BG_MAIN)
+            self.btn_download_user.config(state="normal", bg=self.ACCENT,
+                                          fg=self.FG_ON_ACCENT)
+            self.btn_download_link.config(state="normal", bg=self.ACCENT,
+                                          fg=self.FG_ON_ACCENT)
+            self.btn_update_all.config(state="normal", bg=self.BG_INPUT, fg=self.FG_TEXT)
             self.btn_stop.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB)
 
     # ---------- vòng đời ----------
@@ -336,9 +526,20 @@ class XenForoScannerApp:
             loop.close()
             self.current_loop = None
             self.change_buttons_state(running=False)
+            # Ưu tiên thông báo lỗi/dừng; bình thường thì báo xong.
+            if self.stop_event.is_set():
+                self.set_status("ĐÃ DỪNG", self.COLOR_ORANGE)
+            elif self._had_error:
+                self.set_status("CÓ LỖI", self.COLOR_RED)
+            else:
+                self.set_status("SẴN SÀNG", self.FG_SUB, self._last_detail)
 
     def stop_crawl(self):
         self.stop_event.set()
+        # Phản hồi tức thì: bấm xong thấy trạng thái đổi ngay, không phải chờ
+        # engine thoát rồi mới thấy nút tắt (với file nặng có thể vài giây).
+        self.set_status("ĐANG DỪNG", self.COLOR_ORANGE, "huỷ tải và đóng tab...")
+        self.btn_stop.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB)
         loop = self.current_loop
         if loop and not loop.is_closed():
             try:
@@ -352,7 +553,11 @@ class XenForoScannerApp:
 
     def _launch(self, coro_factory):
         self.stop_event.clear()
+        self._had_error = False
+        self._last_detail = ""
+        self._n_image = self._n_video = self._n_error = 0
         self.change_buttons_state(running=True)
+        self.set_status("ĐANG QUÉT", self.ACCENT)
         threading.Thread(target=self.run_async_engine, args=(coro_factory,), daemon=True).start()
 
     # ---------- điểm vào từ UI ----------
@@ -396,9 +601,37 @@ class XenForoScannerApp:
         self.cmb_username.configure(values=self.local_users.names())
         self.cmb_username.set(typed)
 
+    # ---------- phím tắt ----------
+    def _bind_keys(self):
+        root = self.root
+        root.bind("<Control-Return>", lambda e: self._focused_primary())
+        root.bind("<Escape>", lambda e: self.stop_crawl())
+        root.bind("<Control-f>", lambda e: self._focus_filter())
+        root.bind("<Control-l>", lambda e: self.clear_log())
+        for w in (self.ent_thread_url, self.ent_filter):
+            w.bind("<Return>", lambda e: self._focused_primary())
+
+    def _focused_primary(self):
+        """Ctrl+Enter chạy đúng nút theo ô đang có con trỏ.
+
+        Không bắt được thì mặc định quét 1 user, vì đó là hành động dùng nhiều nhất.
+        """
+        focused = self.root.focus_get()
+        if focused is self.ent_thread_url:
+            self.start_link_crawl_thread()
+        elif focused is self.cmb_username:
+            self.start_single_crawl_thread()
+        else:
+            self.start_single_crawl_thread()
+
+    def _focus_filter(self):
+        self.ent_filter.focus_set()
+        self.ent_filter.select_range(0, tk.END)
+
 
 if __name__ == "__main__":
     app_root = tk.Tk()
     app = XenForoScannerApp(app_root)
+    app._bind_keys()
     app.auto_launch_browser()
     app_root.mainloop()

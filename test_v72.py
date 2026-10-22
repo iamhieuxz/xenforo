@@ -253,6 +253,32 @@ class TestLogColors(unittest.TestCase):
         """'👥 [USER 1/2]' có emoji trước dấu, vẫn phải ra màu chứ không rơi về dim."""
         self.assertEqual(log_tag("👥 [USER 1/2] ĐỒNG BỘ DỮ LIỆU", "info"), "info")
 
+    def test_no_emoji_left_in_ui_labels(self):
+        """Nhãn giao diện không được chứa emoji — dùng emoji cho icon là mẫu UI rác."""
+        import re as _re
+        import tkinter as tk
+        import v72
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = v72.XenForoScannerApp(root)
+            texts = [app.btn_download_user.cget("text"), app.btn_download_link.cget("text"),
+                     app.btn_stop.cget("text"), app.btn_update_all.cget("text"),
+                     app.btn_copy_log.cget("text"), app.btn_clear_log.cget("text")]
+            labels = []
+            def walk(w):
+                for child in w.winfo_children():
+                    if isinstance(child, tk.Label):
+                        labels.append(child.cget("text"))
+                    walk(child)
+            walk(root)
+            for t in texts + labels:
+                self.assertIsNone(_re.search(r"[\U0001F300-\U0001FAFF☀-➿️]",
+                                             str(t)),
+                                  f"còn emoji trong nhãn: {t!r}")
+        finally:
+            root.destroy()
+
     def test_marker_mid_line_is_not_mistaken_for_a_tag(self):
         """Dấu ngoặc giữa dòng (URL, text) không được nhận nhầm làm dấu phân loại."""
         self.assertEqual(log_tag("xem https://r/threads/a.1/page-2/?q=[ok]"), "dim")
@@ -339,6 +365,103 @@ class TestDownloadProgress(unittest.TestCase):
         self.assertEqual(count_files({"image": 1, "video": 2, "file": 1}),
                          "1 ảnh, 2 video và 1 tệp")
         self.assertEqual(count_files({"image": 0, "video": 0, "file": 0}), "0 tệp")
+
+    def test_all_text_colors_pass_wcag_aa(self):
+        """Mọi cặp chữ/nền phải đạt WCAG AA, kể cả màu lúc hover.
+
+        Nền tối dễ trượt: chữ trắng trên accent sáng chỉ đạt 3.68:1, và làm nhạt
+        nền lúc hover càng làm tỷ lệ tệ hơn. Bắt bằng test để không tái phát.
+        """
+        import tkinter as tk
+        import v72
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = v72.XenForoScannerApp(root)
+
+            def lum(hex_color):
+                h = hex_color.lstrip("#")
+                ch = []
+                for i in (0, 2, 4):
+                    v = int(h[i:i + 2], 16) / 255
+                    ch.append(v / 12.92 if v <= 0.03928
+                              else ((v + 0.055) / 1.055) ** 2.4)
+                return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+            def ratio(fg, bg):
+                a, b = lum(fg), lum(bg)
+                return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+            pairs = [
+                ("chinh/nen the", app.FG_TEXT, app.BG_CARD, 4.5),
+                ("chinh/nen app", app.FG_TEXT, app.BG_MAIN, 4.5),
+                ("nhan phu/nen the", app.FG_SUB, app.BG_CARD, 4.5),
+                ("nhan phu/nen app", app.FG_SUB, app.BG_MAIN, 4.5),
+                ("chu o nhap", app.FG_TEXT, app.BG_INPUT, 4.5),
+                ("chu nut chinh", app.FG_ON_ACCENT, app.ACCENT, 4.5),
+                ("chu nut cap nhat", app.FG_TEXT, app.BG_INPUT, 4.5),
+                ("nut chinh hover", app.FG_ON_ACCENT, app._shift(app.ACCENT, -18), 4.5),
+                ("nut do hover", app.FG_ON_ACCENT, app._shift(app.COLOR_RED, -18), 4.5),
+            ]
+            for tag, color in v72.LOG_COLORS.items():
+                pairs.append((f"log {tag}", color, app.BG_INPUT, 4.5))
+
+            for name, fg, bg, need in pairs:
+                r = ratio(fg, bg)
+                self.assertGreaterEqual(r, need,
+                                        f"{name}: {fg} tren {bg} chi {r:.2f}:1")
+        finally:
+            root.destroy()
+
+    def test_stats_read_the_exact_strings_engine_prints(self):
+        """Bộ đếm phải khớp đúng chuỗi engine thật sự in ra.
+
+        count_files() gọi nhóm thứ ba là 'tệp', và số lỗi nằm ở dòng
+        '[!] Cảnh báo: N tệp lỗi đường truyền' chứ không phải 'N lỗi'. Regex đoán
+        sai từ là hỏng cả dòng thống kê.
+        """
+        import tkinter as tk
+        import v72
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = v72.XenForoScannerApp(root)
+            app._safe_log("[✓] Đã tải: " + count_files({"image": 12, "video": 2, "file": 0}))
+            app._safe_log("   [!] Cảnh báo: 3 tệp lỗi đường truyền trong bài này.")
+            self.assertEqual(app._n_image, 12)
+            self.assertEqual(app._n_video, 2)
+            self.assertEqual(app._n_error, 3)
+            self.assertEqual(app._last_detail, "12 ảnh, 2 video · 3 lỗi")
+            self.assertTrue(app._had_error, "dòng [!] phải bật cờ có lỗi")
+        finally:
+            root.destroy()
+
+    def test_log_filter_hides_and_restores(self):
+        """Lọc phải ẩn dòng không khớp nhưng giữ nguyên dữ liệu gốc để bỏ lọc là hiện lại."""
+        import tkinter as tk
+        import v72
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = v72.XenForoScannerApp(root)
+            app._safe_log("[✓] Bài 1 xong")
+            app._safe_log("[-] Lỗi kết nối")
+            app._safe_log("[✓] Bài 2 xong")
+            all_lines = app.log_box.index("end-1c")
+
+            app.ent_filter.insert(0, "lỗi")
+            app._apply_filter()
+            shown = app.log_box.get("1.0", "end-1c")
+            self.assertIn("Lỗi kết nối", shown)
+            self.assertNotIn("Bài 1 xong", shown)
+            self.assertEqual(len(app._log_lines), 3, "lọc không được xoá dữ liệu gốc")
+
+            app.ent_filter.delete(0, tk.END)
+            app._apply_filter()
+            self.assertEqual(app.log_box.index("end-1c"), all_lines,
+                             "bỏ lọc phải hiện lại đủ số dòng ban đầu")
+        finally:
+            root.destroy()
 
     def test_stop_cuts_off_hung_download(self):
         """Bấm Dừng phải cắt ngay request đang treo, không chờ hết timeout.
