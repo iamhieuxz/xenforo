@@ -17,17 +17,72 @@ import browser_launcher
 from cache import MediaCache, LocalUserIndex
 from engine import CrawlerEngine
 
-# Mỗi loại thông báo một màu riêng, tất cả đủ tương phản trên nền BG_INPUT.
-LOG_COLORS = {
-    "error":   "#f87171",   # [-] lỗi
-    "summary": "#fbbf24",   # [!] cảnh báo, tệp lỗi đường truyền
-    "success": "#4ade80",   # [✓] [+] xong
-    "info":    "#60a5fa",   # [*] đang chạy
-    "system":  "#38bdf8",   # [*] dòng khởi động app
-    "bulk":    "#a78bfa",   # cập nhật đa luồng
-    "skip":    "#8b95a5",   # [•] trùng khớp, bỏ qua
-    "dim":     "#8b95a5",   # dấu phân cách, dòng chưa phân loại
+# Bảng màu xuất phát từ hue hổ phách, chọn độ sáng bằng công thức OKLCH sao cho
+# mọi cặp chữ/nền đạt WCAG AA. Accent dùng làm NỀN nút với chữ tối (8:1) chứ
+# không phải chữ trắng trên nền tối — đó là chỗ bảng màu cũ bị xỉn.
+# Mỗi token đều trả lời trước câu hỏi: nó nằm trên nền nào?
+PALETTE = {
+    "light": {
+        "BG_MAIN":   "#eae5da",   # nền app, kem sáng
+        "BG_CARD":   "#fdfbf7",   # thẻ nổi nhẹ trên nền app
+        "BG_INPUT":  "#ffffff",
+        "BORDER":    "#8c7d5e",   # 3:1 tren ca nen the, o nhap va nen app
+        "FG_TEXT":   "#1c1917",
+        "FG_SUB":    "#5f574e",
+        "ACCENT":    "#f49d08",   # nền nút: chữ tối đặt lên, 8.06:1
+        "ACCENT_TXT": "#8f5600",   # accent dùng làm CHỮ, dat tren ca 3 nen
+        "ACCENT_HOVER": "#e68f00",
+        "FG_ON_ACCENT": "#1c1917",
+        "DANGER":    "#f13f39",
+        "DISABLED":  "#e4ded1",
+        "LOG": {
+            "error": "#b42318", "summary": "#9a6700", "success": "#157f3d",
+            "info": "#1d4ed8", "system": "#0e7490", "bulk": "#6d28d9",
+            "skip": "#57534e", "dim": "#78716c",
+        },
+    },
+    "warm": {
+        "BG_MAIN":   "#1f1c19",   # nền app tối ấm, không chìm như bản cũ
+        "BG_CARD":   "#2b2724",
+        "BG_INPUT":  "#37322d",
+        "BORDER":    "#867a6d",
+        "FG_TEXT":   "#f7f3ec",
+        "FG_SUB":    "#a89e92",
+        "ACCENT":    "#9a630b",   # chữ sáng đặt lên, 4.56:1
+        "ACCENT_TXT": "#f49d08",  # accent dùng làm CHỮ trên thẻ, 6.82:1
+        "ACCENT_HOVER": "#8c5500",
+        "FG_ON_ACCENT": "#f7f3ec",
+        "DANGER":    "#d82122",
+        "DISABLED":  "#2f2a26",
+        "LOG": {
+            "error": "#fca5a5", "summary": "#fcd34d", "success": "#86efac",
+            "info": "#93c5fd", "system": "#67e8f9", "bulk": "#c4b5fd",
+            "skip": "#a8a29e", "dim": "#a8a29e",
+        },
+    },
 }
+
+# Đường dẫn file ghi chọn theme, để lần sau mở app vẫn dùng đúng bảng màu đã chọn.
+_THEME_FILE = os.path.join(os.path.expanduser("~"), ".xenforo_theme")
+
+
+def load_theme():
+    try:
+        with open(_THEME_FILE) as f:
+            name = f.read().strip()
+        if name in PALETTE:
+            return name
+    except OSError:
+        pass
+    return "light"
+
+
+def save_theme(name):
+    try:
+        with open(_THEME_FILE, "w") as f:
+            f.write(name)
+    except OSError:
+        pass
 
 # Dấu mở đầu dòng -> tag. Engine/downloader đã viết sẵn dấu này ở mọi tin,
 # nên suy ra màu ở đây thay vì sửa từng chỗ gọi log (23 chỗ đang thiếu tag).
@@ -64,24 +119,8 @@ class XenForoScannerApp:
         self.root.geometry("1060x820")
         self.root.minsize(760, 560)
 
-        # Tông tối: nền lạnh trung tính (không tím/xanh dương AI), 1 accent xanh
-        # bão hòa vừa phải dùng cho hành động chính. Màu nhấn thứ chỉ xuất hiện
-        # trong log và trạng thái lỗi, không tranh với nút bấm.
-        self.BG_MAIN = "#0b0d12"     # nền sâu nhất, không dùng #000 thuần
-        self.BG_CARD = "#12151c"     # bề mặt thẻ
-        self.BG_INPUT = "#191d26"    # ô nhập, nổi nhẹ trên nền thẻ
-        self.BORDER = "#252b37"      # viền mảnh thay cho khối đặc
-        self.FG_TEXT = "#e8eaed"
-        self.FG_SUB = "#8b95a5"      # nhãn phụ, đủ tương phản trên nền thẻ
-
-        # Accent tối hơn bản chuẩn để chữ trắng đạt 4.5:1 (bản #3b82f6 chỉ 3.68:1).
-        self.ACCENT = "#2563eb"      # hành động chính
-        self.ACCENT_HOVER = "#3b82f6"
-        self.COLOR_GREEN = "#22c55e"  # hoàn tất
-        self.COLOR_RED = "#ef4444"    # dừng khẩn cấp / lỗi
-        self.COLOR_ORANGE = "#f59e0b" # cập nhật đa luồng
-        self.COLOR_DISABLED = "#1e222b"
-        self.FG_ON_ACCENT = "#ffffff"
+        self.theme_name = load_theme()
+        self._apply_palette()
 
         self.FONT_TITLE = ("Segoe UI", 16, "bold")
         self.FONT_CARD_HEADER = ("Segoe UI", 9, "bold")
@@ -94,7 +133,7 @@ class XenForoScannerApp:
         self.LOG_KEEP = 1000
 
         self.root.configure(bg=self.BG_MAIN)
-        self._enable_dark_titlebar()
+        self._enable_dark_titlebar(self.theme_name == "warm")
 
         self.stop_event = threading.Event()
         self.download_dir = config.DOWNLOAD_DIR
@@ -117,6 +156,49 @@ class XenForoScannerApp:
             self.log(f"[-] {self._boot_error}", "error")
         self.log(f"[*] V72 ENGINE: Playwright Native Fetch • cache: {self.download_dir}", "system")
 
+    # ---------- bảng màu ----------
+    def _apply_palette(self):
+        """Đổa token của theme vào thuộc tính cũ để các widget đã dựng lấy màu đúng."""
+        p = PALETTE[self.theme_name]
+        self.BG_MAIN, self.BG_CARD, self.BG_INPUT = p["BG_MAIN"], p["BG_CARD"], p["BG_INPUT"]
+        self.BORDER, self.FG_TEXT, self.FG_SUB = p["BORDER"], p["FG_TEXT"], p["FG_SUB"]
+        self.ACCENT, self.ACCENT_HOVER = p["ACCENT"], p["ACCENT_HOVER"]
+        self.ACCENT_TXT = p["ACCENT_TXT"]
+        self.FG_ON_ACCENT = p["FG_ON_ACCENT"]
+        self.LOG_COLORS = p["LOG"]
+        self.COLOR_GREEN = p["LOG"]["success"]
+        self.COLOR_RED = p["DANGER"]
+        self.COLOR_ORANGE = p["LOG"]["summary"]
+        self.COLOR_DISABLED = p["DISABLED"]
+
+    def _make_theme_button(self, parent):
+        """Nút đổi sáng/tối: ký hiệu + nhãn tiếng Việt, có viền để thấy rõ.
+
+        Ký tự ◐ trần trên nền app rất dễ bị bỏ qua. Nhãn 'Giao diện' nói rõ
+        nút làm gì; viền accent tách nó khỏi nền.
+        """
+        self.btn_theme = tk.Button(
+            parent, text="◐  Giao diện", relief="flat", bd=0,
+            bg=self.BG_CARD, activebackground=self.ACCENT,
+            fg=self.ACCENT_TXT, activeforeground=self.FG_ON_ACCENT,
+            highlightbackground=self.BORDER, highlightthickness=1,
+            highlightcolor=self.ACCENT,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            padx=10, pady=6, command=self.toggle_theme)
+        self.btn_theme.pack(side="left")
+
+    def toggle_theme(self):
+        """Đổi sáng/tối: sửa token rồi dựng lại toàn bộ UI từ nguồn, không vá tay."""
+        self.theme_name = "warm" if self.theme_name == "light" else "light"
+        save_theme(self.theme_name)
+        self._apply_palette()
+        self._enable_dark_titlebar(self.theme_name == "warm")
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.root.configure(bg=self.BG_MAIN)
+        self._build_ui()
+        self._apply_filter()   # _log_lines còn nguyên nên log hiện lại sau khi đổi màu
+
     def auto_launch_browser(self):
         """Bật trình duyệt cổng 9222 ngay khi mở app (chạy ngoài GUI để không treo)."""
         if not config.AUTO_LAUNCH_BROWSER:
@@ -132,12 +214,12 @@ class XenForoScannerApp:
         threading.Thread(target=work, daemon=True).start()
 
     # ---------- khởi tạo ----------
-    def _enable_dark_titlebar(self):
+    def _enable_dark_titlebar(self, dark=True):
         try:
             import ctypes
             self.root.update()
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            dark = ctypes.c_int(1)
+            dark = ctypes.c_int(1 if dark else 0)
             for attr in (20, 19):
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     hwnd, attr, ctypes.byref(dark), ctypes.sizeof(dark))
@@ -187,8 +269,12 @@ class XenForoScannerApp:
         tk.Label(title_box, text="Playwright Native Fetch · Cache SQLite · Dừng khẩn cấp",
                  bg=self.BG_MAIN, fg=self.FG_SUB, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
-        state_box = tk.Frame(header, bg=self.BG_MAIN)
-        state_box.grid(row=0, column=1, sticky="e", padx=(20, 4))
+        right_box = tk.Frame(header, bg=self.BG_MAIN)
+        right_box.grid(row=0, column=1, sticky="e", padx=(20, 0))
+        self._make_theme_button(right_box)
+
+        state_box = tk.Frame(right_box, bg=self.BG_MAIN)
+        state_box.pack(side="right", padx=(12, 0))
         self.lbl_state = tk.Label(state_box, text="SẴN SÀNG", bg=self.BG_MAIN, fg=self.FG_SUB,
                                   font=("Segoe UI", 10, "bold"))
         self.lbl_state.pack(anchor="e")
@@ -206,7 +292,7 @@ class XenForoScannerApp:
         card_config = tk.Frame(grid, bg=self.BG_CARD, padx=18, pady=16,
                                highlightbackground=self.BORDER, highlightthickness=1)
         card_config.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self._card_header(card_config, "THÔNG TIN ĐỐI TƯỢNG", self.ACCENT)
+        self._card_header(card_config, "THÔNG TIN ĐỐI TƯỢNG", self.ACCENT_TXT)
 
         self.cmb_box_url = self._combo(card_config, "Link Chuyên Mục (Box URL)",
                                        config.BOX_PRESETS[0], config.BOX_PRESETS)
@@ -280,12 +366,14 @@ class XenForoScannerApp:
                                                  highlightthickness=1,
                                                  highlightbackground=self.BORDER)
         self.log_box.grid(row=1, column=0, sticky="nsew")
-        for tag, color in LOG_COLORS.items():
+        for tag, color in self.LOG_COLORS.items():
             self.log_box.tag_configure(tag, foreground=color,
                                        font=("Consolas", 10, "bold"))
-        self.log_box.tag_configure("dim", foreground=LOG_COLORS["dim"], font=self.FONT_MONO)
+        self.log_box.tag_configure("dim", foreground=self.LOG_COLORS["dim"], font=self.FONT_MONO)
         # Giữ toàn bộ dòng gốc để lọc/copy lại được, vẽ lại theo bộ lọc hiện tại.
-        self._log_lines = []
+        # Không reset: khi đổi theme, UI dựng lại và danh sách này phải còn để vẽ log.
+        if not hasattr(self, "_log_lines"):
+            self._log_lines = []
 
     def _card_header(self, parent, text, color):
         """Tiêu đề thẻ: chữ nhỏ, giãn chữ, không emoji."""
