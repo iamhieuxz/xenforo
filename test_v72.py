@@ -18,7 +18,7 @@ import config
 import browser_launcher as B
 from cache import MediaCache, LocalUserIndex
 from downloader import plan_jobs, url_hash, Downloader, count_files
-from v72 import LOG_COLORS, log_tag, _MARKER_TAGS
+from v72 import PALETTE, log_tag, _MARKER_TAGS
 
 
 def soup_of(html):
@@ -298,8 +298,11 @@ class TestLogColors(unittest.TestCase):
             self.assertIn(src[1], _MARKER_TAGS, f"dấu {src} chưa được gán màu")
 
     def test_all_tags_used_are_configured(self):
-        for tag, color in LOG_COLORS.items():
-            self.assertRegex(color, r'^#[0-9a-fA-F]{6}$', f"{tag} sai định dạng màu")
+        """Mọi màu log phải là hex hợp lệ, và phải có ở cả hai theme."""
+        for theme, p in PALETTE.items():
+            self.assertTrue(p["LOG"], f"{theme}: thiếu bảng màu log")
+            for tag, color in p["LOG"].items():
+                self.assertRegex(color, r'^#[0-9a-fA-F]{6}$', f"{theme}/{tag} sai định dạng màu")
 
 
 class TestDownloadProgress(unittest.TestCase):
@@ -372,46 +375,45 @@ class TestDownloadProgress(unittest.TestCase):
         Nền tối dễ trượt: chữ trắng trên accent sáng chỉ đạt 3.68:1, và làm nhạt
         nền lúc hover càng làm tỷ lệ tệ hơn. Bắt bằng test để không tái phát.
         """
-        import tkinter as tk
-        import v72
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            app = v72.XenForoScannerApp(root)
+        def lum(hex_color):
+            h = hex_color.lstrip("#")
+            ch = []
+            for i in (0, 2, 4):
+                v = int(h[i:i + 2], 16) / 255
+                ch.append(v / 12.92 if v <= 0.03928
+                          else ((v + 0.055) / 1.055) ** 2.4)
+            return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
 
-            def lum(hex_color):
-                h = hex_color.lstrip("#")
-                ch = []
-                for i in (0, 2, 4):
-                    v = int(h[i:i + 2], 16) / 255
-                    ch.append(v / 12.92 if v <= 0.03928
-                              else ((v + 0.055) / 1.055) ** 2.4)
-                return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+        def ratio(fg, bg):
+            a, b = lum(fg), lum(bg)
+            return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
-            def ratio(fg, bg):
-                a, b = lum(fg), lum(bg)
-                return (max(a, b) + 0.05) / (min(a, b) + 0.05)
-
+        for theme, p in PALETTE.items():
+            card, main, inp = p["BG_CARD"], p["BG_MAIN"], p["BG_INPUT"]
             pairs = [
-                ("chinh/nen the", app.FG_TEXT, app.BG_CARD, 4.5),
-                ("chinh/nen app", app.FG_TEXT, app.BG_MAIN, 4.5),
-                ("nhan phu/nen the", app.FG_SUB, app.BG_CARD, 4.5),
-                ("nhan phu/nen app", app.FG_SUB, app.BG_MAIN, 4.5),
-                ("chu o nhap", app.FG_TEXT, app.BG_INPUT, 4.5),
-                ("chu nut chinh", app.FG_ON_ACCENT, app.ACCENT, 4.5),
-                ("chu nut cap nhat", app.FG_TEXT, app.BG_INPUT, 4.5),
-                ("nut chinh hover", app.FG_ON_ACCENT, app._shift(app.ACCENT, -18), 4.5),
-                ("nut do hover", app.FG_ON_ACCENT, app._shift(app.COLOR_RED, -18), 4.5),
+                ("chinh/nen the", p["FG_TEXT"], card, 4.5),
+                ("chinh/nen app", p["FG_TEXT"], main, 4.5),
+                ("chinh/nen o nhap", p["FG_TEXT"], inp, 4.5),
+                ("nhan phu/nen the", p["FG_SUB"], card, 4.5),
+                ("nhan phu/nen app", p["FG_SUB"], main, 4.5),
+                ("nhan phu/nen o nhap", p["FG_SUB"], inp, 4.5),
+                ("accent chu/nen the", p["ACCENT_TXT"], card, 4.5),
+                ("accent chu/nen app", p["ACCENT_TXT"], main, 4.5),
+                ("accent chu/nen o nhap", p["ACCENT_TXT"], inp, 4.5),
+                ("chu tren nut accent", p["FG_ON_ACCENT"], p["ACCENT"], 4.5),
+                ("chu tren nut hover", p["FG_ON_ACCENT"], p["ACCENT_HOVER"], 4.5),
+                ("chu tren nut do", p["FG_ON_ACCENT"], p["DANGER"], 4.5),
             ]
-            for tag, color in v72.LOG_COLORS.items():
-                pairs.append((f"log {tag}", color, app.BG_INPUT, 4.5))
+            for tag, color in p["LOG"].items():
+                pairs.append((f"log {tag}", color, inp, 4.5))
+            # Viền là control trực quan (1.4.11): cần thấy trên mọi nền nó nằm.
+            for bg_name, bg in (("the", card), ("app", main), ("o nhap", inp)):
+                pairs.append((f"vien/{bg_name}", p["BORDER"], bg, 3.0))
 
             for name, fg, bg, need in pairs:
                 r = ratio(fg, bg)
-                self.assertGreaterEqual(r, need,
-                                        f"{name}: {fg} tren {bg} chi {r:.2f}:1")
-        finally:
-            root.destroy()
+                self.assertGreaterEqual(
+                    r, need, f"[{theme}] {name}: {fg} tren {bg} chi {r:.2f}:1")
 
     def test_stats_read_the_exact_strings_engine_prints(self):
         """Bộ đếm phải khớp đúng chuỗi engine thật sự in ra.
