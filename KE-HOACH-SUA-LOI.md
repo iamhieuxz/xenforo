@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | 0 | Baseline & khung kiểm chứng | — | Bắt buộc | [x] |
 | 1 | C1 — `nonlocal ok` | 🔴 | P0 | [x] |
-| 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [ ] |
+| 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [x] |
 | 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [ ] |
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [ ] |
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [ ] |
@@ -87,12 +87,26 @@ và tất cả thành công — tránh trường hợp sửa quá tay thành lu�
 
 Hiện ghi path trước khi tải; lần xuất hiện thứ 2 của URL fail bị coi là "đã xử lý".
 
-- [ ] 2.1 Bỏ `seen_hashes[h] = save_path` khỏi vòng lặp
-- [ ] 2.2 Ghi qua `add_done_callback` chỉ khi kết quả `"OK"`
-- [ ] 2.3 Xử lý trường hợp hash đã có nhưng file không tồn tại → cho tải lại
-- [ ] 2.4 Test: 2 job cùng URL, job đầu fail → job sau phải có task
+- [x] 2.1 Bỏ `seen_hashes[h] = save_path` khỏi vòng lặp
+- [x] 2.2 Ghi qua `add_done_callback` chỉ khi kết quả `"OK"`
+- [x] 2.3 Xử lý trường hợp hash đã có nhưng file không tồn tại → cho tải lại
+- [x] 2.4 Test: 2 job cùng URL, job đầu fail → job sau phải có task
 
-**Bằng chứng:** `audit_repro.py` → `c2 ... OK`
+**Bằng chứng:**
+
+```
+python audit_repro.py -> [C2] OK  (lần 1 fail tạo 1 task, lần 2 tạo 1 task)
+python -m unittest test_v72.TestDedupeWithinThread -> Ran 2 tests, OK
+python -m unittest test_v72 -> Ran 57 tests, OK
+```
+
+Test thứ hai kiểm chiều ngược lại: khi lần đầu **thành công** thì lần hai phải
+clone (0 task), không tải lại — tránh sửa quá tay thành luôn tải lại, làm mất
+tác dụng khử trùng lặp.
+
+**Ghi chú:** test đầu tiên tôi viết dùng 500 rồi 200 và nó fail — vì `500` nằm
+trong nhánh retry nên `MAX_RETRIES` đã tiêu hết cả status 200 của lần sau. Đổi
+sang `404` (lỗi vĩnh viễn, không retry) để test tất định và nhanh.
 
 ---
 

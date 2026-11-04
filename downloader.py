@@ -88,20 +88,30 @@ class Downloader:
             return False
 
     async def dispatch(self, context, jobs, referer_url, seen_hashes):
-        """Tạo task cho các job chưa có. seen_hashes: hash -> path đã chiếm trong thread.
+        """Tạo task cho các job chưa có. seen_hashes: hash -> path ĐÃ TẢI XONG trong thread.
 
         Trùng hash trong cùng thread thì clone từ bản đầu, không tải lại.
+        Chỉ ghi seen_hashes khi tải THÀNH CÔNG: bản cũ ghi path trước khi tải,
+        nên một URL xuất hiện ở hai post mà lần đầu fail thì lần hai bị coi là
+        "đã xử lý" -> media mất im lặng, không log, không đếm lỗi.
         """
         tasks = []
         for url, save_path, h, kind in jobs:
             if h in seen_hashes:
-                self.clone_cached(seen_hashes[h], save_path)
-                continue
-            seen_hashes[h] = save_path
+                src = seen_hashes[h]
+                # Bản trước có thể đã fail (file không tồn tại) -> bỏ ghi nhận,
+                # rơi xuống nhánh dưới để tải lại thay vì clone từ hư không.
+                if os.path.exists(src):
+                    if self.clone_cached(src, save_path):
+                        continue
+                seen_hashes.pop(h, None)
+
             if os.path.exists(save_path):
+                seen_hashes[h] = save_path
                 continue
             cached = self.cache.path_for(h)
             if cached and self.clone_cached(cached, save_path):
+                seen_hashes[h] = save_path
                 continue
             if self.stop_event.is_set():
                 break
@@ -109,8 +119,27 @@ class Downloader:
             t.kind = kind          # gather() đọc để đếm ảnh/video
             self.active_tasks.add(t)
             t.add_done_callback(self.active_tasks.discard)
+            t.add_done_callback(self._remember_when_ok(h, save_path, seen_hashes))
             tasks.append(t)
         return tasks
+
+    def _remember_when_ok(self, h, save_path, seen_hashes):
+        """Chỉ ghi nhận hash khi task kết thúc với "OK".
+
+        Trả về callback để gắn bằng add_done_callback. Không dùng biến closure
+        gán trực tiếp vì lý do đã ghi ở engine.crawl_users: closure rebind sẽ
+        tạo biến cục bộ và không ảnh hưởng dict bên ngoài (ở đây dict là object
+        nên mutate được, nhưng vẫn tách hàm cho rõ ràng).
+        """
+        def _cb(fut):
+            if fut.cancelled():
+                return
+            try:
+                if fut.result() == "OK" and os.path.exists(save_path):
+                    seen_hashes[h] = save_path
+            except Exception:
+                pass
+        return _cb
 
     async def _racing_stop(self, coro):
         """Chờ get() hoặc cờ dừng, cái nào tới trước thì thắng. Trả None nếu bị dừng."""

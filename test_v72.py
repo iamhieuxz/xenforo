@@ -545,6 +545,89 @@ class TestDownloadProgress(unittest.TestCase):
         self.assertEqual(config.SETTLE_MS, 0)
 
 
+class TestDedupeWithinThread(unittest.TestCase):
+    """seen_hashes chỉ được ghi khi tải THÀNH CÔNG.
+
+    Bug cũ: ghi path ngay trong vòng lặp dispatch, trước khi tải. Một URL xuất
+    hiện ở hai post mà lần đầu fail (500, timeout) thì lần hai bị coi là "đã
+    xử lý" -> media mất im lặng.
+    """
+
+    class _Resp:
+        def __init__(self, status):
+            self.status = status
+            self.headers = {"content-type": "image/jpeg"}
+
+        async def body(self):
+            return b"bytes" if self.status == 200 else b""
+
+        async def dispose(self):
+            pass
+
+    class _NoStop:
+        @staticmethod
+        def is_set():
+            return False
+
+    def _dispatch_twice(self, first_ok):
+        """first_ok=False: mọi request ở lần dispatch đầu trả 404 (lỗi vĩnh viễn,
+        không retry nên test nhanh và tất định). first_ok=True: trả 200."""
+        import asyncio, tempfile, shutil
+        from downloader import Downloader
+
+        tmp = tempfile.mkdtemp(prefix="dedupe")
+        try:
+            state = {"ok": first_ok}
+
+            class _Req:
+                async def get(inner, url, headers=None, timeout=None):
+                    return TestDedupeWithinThread._Resp(200 if state["ok"] else 404)
+
+            class _Ctx:
+                request = _Req()
+
+            class _Cache:
+                @staticmethod
+                def path_for(h):
+                    return None
+
+                @staticmethod
+                def record(h, p):
+                    pass
+
+            async def run():
+                d = Downloader(cache=_Cache(), log=lambda *a, **k: None,
+                               stop_event=TestDedupeWithinThread._NoStop(),
+                               semaphore=asyncio.Semaphore(2), db_lock=asyncio.Lock())
+                seen, folder, url = {}, os.path.join(tmp, "f"), "http://x/same.jpg"
+                t1 = await d.dispatch(_Ctx(), [(url, os.path.join(folder, "a.jpg"),
+                                                "H", "image")], "http://ref", seen)
+                await d.gather(t1)
+                a_ok = os.path.exists(os.path.join(folder, "a.jpg"))
+                state["ok"] = True          # từ đây server hoạt động bình thường
+                t2 = await d.dispatch(_Ctx(), [(url, os.path.join(folder, "b.jpg"),
+                                                "H", "image")], "http://ref", seen)
+                await d.gather(t2)
+                return len(t1), len(t2), a_ok, os.path.exists(os.path.join(folder, "b.jpg"))
+
+            return asyncio.run(run())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_failed_first_attempt_retries_second_occurrence(self):
+        n1, n2, a_ok, b_ok = self._dispatch_twice(first_ok=False)
+        self.assertEqual(n1, 1)
+        self.assertFalse(a_ok, "lần 1 phải fail (404)")
+        self.assertEqual(n2, 1, "lần 2 cùng URL phải được tải lại, không bị coi là đã xử lý")
+        self.assertTrue(b_ok, "lần 2 thành công thì file phải có")
+
+    def test_successful_first_attempt_is_cloned_not_refetched(self):
+        n1, n2, a_ok, b_ok = self._dispatch_twice(first_ok=True)
+        self.assertTrue(a_ok)
+        self.assertEqual(n2, 0, "đã tải thành công rồi thì phải clone, không tải lại")
+        self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
+
+
 class TestEngineBanner(unittest.TestCase):
     """Banner cuối phiên phải phản ánh đúng kết quả.
 
