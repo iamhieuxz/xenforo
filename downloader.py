@@ -15,6 +15,18 @@ import selectors as S
 from xenforo_parse import clean_name, ext_for, get_url_filename
 
 
+# Sentinel "hết thời gian chờ". Dùng object riêng thay vì None để phân biệt với
+# "người dùng bấm Dừng" — hai tình huống có ý nghĩa thống kê hoàn toàn khác nhau.
+class _Timeout:
+    __slots__ = ()
+
+    def __repr__(self):
+        return "<download timeout>"
+
+
+_TIMEOUT = _Timeout()
+
+
 def url_hash(url):
     return hashlib.md5(url.split('?')[0].split('#')[0].encode('utf-8')).hexdigest()
 
@@ -142,7 +154,17 @@ class Downloader:
         return _cb
 
     async def _racing_stop(self, coro):
-        """Chờ get() hoặc cờ dừng, cái nào tới trước thì thắng. Trả None nếu bị dừng."""
+        """Chờ get() hoặc cờ dừng, cái nào tới trước thì thắng.
+
+        Trả về:
+          - response   : request xong
+          - None       : bị người dùng bấm Dừng
+          - _TIMEOUT   : hết DOWNLOAD_TIMEOUT_MS mà request chưa xong
+
+        Phân biệt hai trường hợp sau là bắt buộc: bản cũ trả None cho cả hai, nên
+        một file tải quá chậm bị xếp vào "CANCELLED" -> counted() không đếm vào
+        failed, không log dòng nào. Người dùng thấy "xong" trong khi file mất tích.
+        """
         get_task = asyncio.ensure_future(coro)
         try:
             for _ in range(int(config.DOWNLOAD_TIMEOUT_MS / 50) + 1):
@@ -151,7 +173,7 @@ class Downloader:
                     return get_task.result()
                 if self.stop_event.is_set():
                     return None
-            return None
+            return _TIMEOUT
         finally:
             # Bắt buộc: nếu chính _fetch bị cancel_all() huỷ, CancelledError
             # ném ra khỏi await asyncio.wait và get_task thành task mồ côi ->
@@ -192,6 +214,9 @@ class Downloader:
 
                     if response is None:
                         return "CANCELLED"
+                    if response is _TIMEOUT:
+                        self.log(f"   [!] Hết thời gian chờ khi tải: {url[:70]}")
+                        return "TIMEOUT"
                     if response.status == 200:
                         ctype = (response.headers.get('content-type') or '').lower()
                         if any(ct in ctype for ct in S.NON_MEDIA_CONTENT_TYPES):
@@ -259,6 +284,10 @@ class Downloader:
             if r == "OK":
                 state["ok"] += 1
                 state[getattr(fut, "kind", "file")] += 1
+            elif r == "TIMEOUT":
+                # Hết giờ là lỗi thật, phải hiện trong thống kê. Bản cũ trả
+                # "CANCELLED" cho cả trường hợp này nên file biến mất không dấu vết.
+                state["failed"] += 1
             elif r == "FAILED" or (isinstance(r, BaseException)
                                   and not self.stop_event.is_set()):
                 state["failed"] += 1

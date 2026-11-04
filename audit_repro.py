@@ -183,7 +183,7 @@ def check_c3():
     record(
         "C3", buggy,
         f"server chậm hơn timeout -> stats={stats} "
-        f"(failed phải >= 1, hiện không đếm và không log)",
+        f"(failed phải >= 1 để file không biến mất khỏi thống kê)",
         "Downloader._fetch -> 'CANCELLED' thay vì 'TIMEOUT'")
 
 

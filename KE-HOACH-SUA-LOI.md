@@ -15,7 +15,7 @@
 | 0 | Baseline & khung kiểm chứng | — | Bắt buộc | [x] |
 | 1 | C1 — `nonlocal ok` | 🔴 | P0 | [x] |
 | 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [x] |
-| 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [ ] |
+| 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [x] |
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [ ] |
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [ ] |
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [ ] |
@@ -116,13 +116,24 @@ sang `404` (lỗi vĩnh viễn, không retry) để test tất định và nhanh
 
 Timeout hiện trả `"CANCELLED"` → không đếm vào `failed`, không log.
 
-- [ ] 3.1 `_racing_stop` trả sentinel riêng thay vì `None` chung
-- [ ] 3.2 `_fetch` map sentinel → `"TIMEOUT"`
-- [ ] 3.3 `counted()` đếm `"TIMEOUT"` vào `failed`
-- [ ] 3.4 Log `[!]` cho mỗi timeout (gộp, tránh spam)
-- [ ] 3.5 Test: server chậm hơn `DOWNLOAD_TIMEOUT_MS` → `stats["failed"] == 1`
+- [x] 3.1 `_racing_stop` trả sentinel riêng thay vì `None` chung
+- [x] 3.2 `_fetch` map sentinel → `"TIMEOUT"`
+- [x] 3.3 `counted()` đếm `"TIMEOUT"` vào `failed`
+- [x] 3.4 Log `[!]` cho mỗi timeout (gộp, tránh spam)
+- [x] 3.5 Test: server chậm hơn `DOWNLOAD_TIMEOUT_MS` → `stats["failed"] == 1`
 
-**Bằng chứng:** `audit_repro.py` → `c3 ... OK`
+**Bằng chứng:**
+
+```
+python audit_repro.py -> [C3] OK  (stats failed=1, trước là failed=0)
+python -m unittest test_v72.TestTimeoutIsNotSilence -> Ran 2 tests, OK
+python -m unittest test_v72 -> Ran 59 tests, OK
+```
+
+**Ghi chú thiết kế:** dùng sentinel object `_TIMEOUT` thay vì chuỗi/`None`.
+Ba trạng thái cần phân biệt là "có response", "bị người dùng dừng", "hết giờ" —
+`None` chỉ mã hoá được hai. Test thứ hai kiểm riêng rằng timeout **không** bị
+đếm nhầm sang `video`, vì đó là kiểu sửa quá tay làm báo cáo vẫn sai.
 
 ---
 

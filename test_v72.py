@@ -628,6 +628,70 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestTimeoutIsNotSilence(unittest.TestCase):
+    """Hết thời gian chờ phải hiện trong thống kê, không được nuốt im lặng.
+
+    Bug cũ: _racing_stop trả None cho cả "hết giờ" và "bấm Dừng". _fetch biến
+    cả hai thành "CANCELLED", mà counted() chỉ đếm "FAILED". Kết quả: server
+    chậm 40s -> file biến mất, failed=0, không một dòng log.
+    """
+
+    class _NoStop:
+        @staticmethod
+        def is_set():
+            return False
+
+    def _run_with(self, timeout_ms):
+        import asyncio, tempfile, shutil
+        from downloader import Downloader
+
+        tmp = tempfile.mkdtemp(prefix="timeout")
+        real = config.DOWNLOAD_TIMEOUT_MS
+        config.DOWNLOAD_TIMEOUT_MS = timeout_ms
+        try:
+            class _Req:
+                async def get(inner, url, headers=None, timeout=None):
+                    await asyncio.sleep(5)      # chậm hơn hạn
+                    raise AssertionError("không được tới đây")
+
+            class _Ctx:
+                request = _Req()
+
+            class _Cache:
+                @staticmethod
+                def path_for(h):
+                    return None
+
+                @staticmethod
+                def record(h, p):
+                    pass
+
+            async def run():
+                d = Downloader(cache=_Cache(), log=lambda *a, **k: None,
+                               stop_event=TestTimeoutIsNotSilence._NoStop(),
+                               semaphore=asyncio.Semaphore(2), db_lock=asyncio.Lock())
+                tasks = await d.dispatch(
+                    _Ctx(), [("http://x/big.mp4", os.path.join(tmp, "b.mp4"), "H", "video")],
+                    "http://ref", {})
+                return await d.gather(tasks)
+
+            return asyncio.run(run())
+        finally:
+            config.DOWNLOAD_TIMEOUT_MS = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_timeout_counts_as_failure(self):
+        stats = self._run_with(300)
+        self.assertEqual(stats["failed"], 1,
+                         f"timeout phải đếm vào failed, không được im lặng: {stats}")
+        self.assertEqual(stats["ok"], 0)
+
+    def test_timeout_does_not_steal_ok_slot(self):
+        """Timeout không được tính là thành công — nếu không, báo cáo lại sai."""
+        stats = self._run_with(300)
+        self.assertEqual(stats["video"], 0, "không tải được file nào thì không được đếm là video")
+
+
 class TestEngineBanner(unittest.TestCase):
     """Banner cuối phiên phải phản ánh đúng kết quả.
 
