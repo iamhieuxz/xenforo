@@ -1,0 +1,9 @@
+# Phụ thuộc chạy thật. Version khớp README và môi trường đã kiểm chứng.
+# Cài: pip install -r requirements.txt
+#
+# Không cần `playwright install`: app dùng chế độ CDP, điều khiển trình duyệt
+# có sẵn trên máy chứ không dùng browser do Playwright tải về.
+playwright==1.54.0
+aiofiles==25.1.0
+beautifulsoup4==4.15.0
+lxml==6.1.1
