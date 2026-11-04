@@ -245,9 +245,26 @@ class Downloader:
                             # 200 nhưng trả HTML -> Cloudflare/404. Lưu ra .jpg là file rác.
                             self.log(f"   [!] Bị chặn/nội dung HTML, bỏ qua: {url[:70]}")
                             return "FAILED"
+
+                        # Chặn TRƯỚC khi nạp: body() nằm trong RAM, nên file quá
+                        # lớn phải biết trước. Playwright 1.54 không có API stream
+                        # cho context.request, nên đây là chốt duy nhất.
+                        too_big = self._too_big(response, url)
+                        if too_big:
+                            return "FAILED"
+
                         body = await response.body()
                         if not body:
                             return "FAILED"
+
+                        # content-length khai báo mà nhận thiếu -> tải dở, lưu vào
+                        # là file hỏng. Bản cũ không kiểm nên ghi thẳng.
+                        declared = self._content_length(response)
+                        if declared is not None and declared != len(body):
+                            self.log(f"   [!] Nhận thiếu dữ liệu ({len(body)}/{declared} byte), "
+                                     f"bỏ qua: {url[:60]}")
+                            return "FAILED"
+
                         async with aiofiles.open(tmp_path, "wb") as f:
                             await f.write(body)
                         os.replace(tmp_path, save_path)
@@ -288,6 +305,31 @@ class Downloader:
                         except Exception:
                             pass
             return "FAILED"
+
+    @staticmethod
+    def _content_length(response):
+        """content-length khai báo, hoặc None nếu server không gửi / gửi sai."""
+        try:
+            raw = response.headers.get('content-length')
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _too_big(self, response, url):
+        """True nếu file vượt MAX_FILE_MB. Trả False khi không biết trước kích thước.
+
+        Không biết thì vẫn tải: chặn mù sẽ bỏ sót media thật khi server không
+        gửi content-length (chunked encoding là chuyện thường với XenForo).
+        """
+        limit = getattr(config, "MAX_FILE_MB", 0) * 1024 * 1024
+        if not limit:
+            return False
+        declared = self._content_length(response)
+        if declared is not None and declared > limit:
+            self.log(f"   [!] Bỏ qua tệp > {config.MAX_FILE_MB}MB "
+                     f"({declared // (1024*1024)}MB): {url[:60]}")
+            return True
+        return False
 
     async def drain(self, tasks, keep=0):
         """Chờ cho tới khi số task chưa xong giảm xuống <= keep.

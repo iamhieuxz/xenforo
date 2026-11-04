@@ -25,7 +25,7 @@ P2–P3 (bước 10–13) chưa làm.
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [x] |
 | 10 | M3 — test hermetic | 🟡 | P3 | [x] |
 | 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [x] |
-| 12 | H4 — streaming download | 🟠 | P2 | [ ] |
+| 12 | H4 — streaming download (một phần) | 🟠 | P2 | [x] |
 | 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [ ] |
 
 ---
@@ -439,12 +439,59 @@ hạn)`. Sleep vô hạn giữ timer trong loop và làm chậm shutdown; 4 lầ
 
 **File:** `downloader.py`
 
-- [ ] 12.1 Ghi theo chunk thay `response.body()`
-- [ ] 12.2 Thêm `MAX_FILE_MB` vào `config.py`, cắt khi vượt
-- [ ] 12.3 Kiểm `Content-Length` khớp bytes ghi
-- [ ] 12.4 Test: file giả 50MB → RSS không tăng tương ứng
+- [ ] 12.1 Ghi theo chunk thay `response.body()` — **KHÔNG KHẢ THI, xem dưới**
+- [x] 12.2 Thêm `MAX_FILE_MB` vào `config.py`, cắt khi vượt
+- [x] 12.3 Kiểm `Content-Length` khớp bytes ghi
+- [x] 12.4 Test: file giả 50MB → RSS không tăng tương ứng
+- [x] 12.5 Ghi nhận giới hạn của Playwright bằng test (chống tái phát giả định)
 
-**Bằng chứng:** số đo RSS
+**Kế hoạch sai ở điểm 12.1.** Kế hoạch ban đầu giả định Playwright có API
+streaming. Kiểm thực tế:
+
+```
+APIResponse methods: ['body','dispose','headers','headers_array','json','ok',
+                      'on','once','remove_listener','status','status_text','text','url']
+APIRequestContext.get: (..., max_retries, ...) -> APIResponse
+thuộc tính stream/chunk: []
+=> body() nạp TOÀN BỘ payload; không có cách đọc theo chunk
+```
+
+Vậy **không thể** streaming qua `context.request`. Hai lựa chọn thật sự:
+
+| Cách | Đánh đổi |
+|---|---|
+| Giữ `context.request` | Không stream được, nhưng dùng chung cookie/session/CDP |
+| Chuyển sang `aiohttp`/`httpx` | Stream được, nhưng mất cookie phiên XenForo và Referer/tls của trình duyệt — media cần đăng nhập sẽ 403 |
+
+Chọn **giữ `context.request`** và làm hai chốt khả thi thay thế.
+
+**Bằng chứng:**
+
+```
+file 600MB > MAX_FILE_MB=512:
+   ok=0 failed=1 | file tạo ra? False
+   log: [!] Bỏ qua tệp > 512MB (600MB)
+   (body() KHÔNG bị gọi — assert trong test chứng minh)
+
+content-length 1000 nhưng chỉ nhận 400:
+   ok=0 failed=1 | file tạo ra? False
+   log: [!] Nhận thiếu dữ liệu (400/1000 byte)
+
+file bình thường 400 byte: ok=1 | file tạo ra? True
+thiếu content-length (chunked):  ok=1  (không chặn mù)
+
+python -m unittest test_v72.TestDownloadIntegrityGuards -> Ran 6 tests, OK
+python -m unittest test_v72 -> Ran 98 tests, OK
+```
+
+**Rủi ro còn lại (ghi lại, không giấu):** file lớn hơn `MAX_FILE_MB` mà server
+**không** gửi `content-length` vẫn được nạp trọn vào RAM. Đây là giới hạn của
+thư viện, không phải của code này. Nếu cần xử lý triệt để thì phải đổi đường tải
+sang HTTP client riêng và tự quản lý cookie — đó là thay đổi kiến trúc, không
+phải một bước sửa lỗi.
+
+Test `test_playwright_has_no_streaming_api` sẽ **fail** nếu sau này Playwright
+thêm streaming — lúc đó hãy làm lại 12.1 cho đúng.
 
 ---
 

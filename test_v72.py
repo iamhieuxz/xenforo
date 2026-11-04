@@ -956,6 +956,153 @@ class TestThemeSwitchMidScan(unittest.TestCase):
         self.assertFalse(self.app._is_running())
 
 
+class TestDownloadIntegrityGuards(unittest.TestCase):
+    """Chặn file quá lớn TRƯỚC khi nạp, và phát hiện tải thiếu dữ liệu.
+
+    H4 gốc muốn streaming, nhưng Playwright 1.54 không có API stream cho
+    context.request: APIResponse chỉ có body() nạp toàn bộ payload vào RAM. Vì
+    vậy hai chốt khả thi là kiểm content-length trước khi gọi body(), và so
+    content-length với số byte thực nhận trước khi ghi ra file.
+    """
+
+    class _NoStop:
+        @staticmethod
+        def is_set():
+            return False
+
+    class _Cache:
+        @staticmethod
+        def path_for(h):
+            return None
+
+        @staticmethod
+        def record(h, p):
+            pass
+
+    def _fetch(self, resp, max_mb=512):
+        import asyncio, tempfile, shutil
+        from downloader import Downloader
+
+        tmp = tempfile.mkdtemp(prefix="integrity")
+        real = config.MAX_FILE_MB
+        config.MAX_FILE_MB = max_mb
+        try:
+            class _Req:
+                async def get(inner, url, headers=None, timeout=None):
+                    return resp
+
+            class _Ctx:
+                request = _Req()
+
+            async def run():
+                logs = []
+                d = Downloader(cache=self._Cache(), log=lambda m, t=None: logs.append(m),
+                               stop_event=self._NoStop(),
+                               semaphore=asyncio.Semaphore(2), db_lock=asyncio.Lock())
+                tasks = await d.dispatch(
+                    _Ctx(), [("http://x/f.bin", os.path.join(tmp, "f.bin"), "H", "file")],
+                    "http://ref", {})
+                stats = await d.gather(tasks)
+                return stats, os.path.exists(os.path.join(tmp, "f.bin")), logs
+
+            return asyncio.run(run())
+        finally:
+            config.MAX_FILE_MB = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_oversized_file_rejected_before_body(self):
+        """Không được gọi body() khi đã biết vượt trần — đó là điểm hết RAM."""
+        class Big:
+            status = 200
+            headers = {"content-type": "video/mp4",
+                       "content-length": str(600 * 1024 * 1024)}
+
+            async def body(self):
+                raise AssertionError("body() không được gọi khi đã biết quá lớn")
+
+            async def dispose(self):
+                pass
+
+        stats, exists, logs = self._fetch(Big(), max_mb=512)
+        self.assertEqual(stats["failed"], 1)
+        self.assertFalse(exists, "không được tạo file rác")
+        self.assertTrue(any("512MB" in l for l in logs), f"phải log lý do: {logs}")
+
+    def test_truncated_download_is_rejected(self):
+        """content-length nói 1000 mà chỉ nhận 400 -> file hỏng, không được ghi."""
+        class Truncated:
+            status = 200
+            headers = {"content-type": "image/jpeg", "content-length": "1000"}
+
+            async def body(self):
+                return b"x" * 400
+
+            async def dispose(self):
+                pass
+
+        stats, exists, logs = self._fetch(Truncated())
+        self.assertEqual(stats["failed"], 1, "tải thiếu phải tính là lỗi")
+        self.assertFalse(exists, "không được lưu file cụt")
+        self.assertTrue(any("thiếu dữ liệu" in l for l in logs))
+
+    def test_normal_file_still_saved(self):
+        """Guard không được chặn nhầm file bình thường."""
+        class Good:
+            status = 200
+            headers = {"content-type": "image/jpeg", "content-length": "400"}
+
+            async def body(self):
+                return b"x" * 400
+
+            async def dispose(self):
+                pass
+
+        stats, exists, _ = self._fetch(Good())
+        self.assertEqual(stats["ok"], 1)
+        self.assertTrue(exists)
+
+    def test_missing_content_length_is_not_blocked(self):
+        """Server dùng chunked encoding: không biết trước kích thước thì vẫn tải."""
+        class NoLen:
+            status = 200
+            headers = {"content-type": "image/jpeg"}
+
+            async def body(self):
+                return b"y" * 1000
+
+            async def dispose(self):
+                pass
+
+        stats, exists, _ = self._fetch(NoLen(), max_mb=1)
+        self.assertEqual(stats["ok"], 1, "thiếu content-length không được coi là quá lớn")
+        self.assertTrue(exists)
+
+    def test_max_file_mb_zero_means_unlimited(self):
+        class Huge:
+            status = 200
+            headers = {"content-type": "video/mp4",
+                       "content-length": str(999 * 1024 * 1024)}
+
+            async def body(self):
+                return b"z" * 10
+
+            async def dispose(self):
+                pass
+
+        stats, exists, _ = self._fetch(Huge(), max_mb=0)
+        # body() trả 10 byte != 999MB -> bị chặn bởi guard toàn vẹn, không phải guard size
+        self.assertEqual(stats["failed"], 1,
+                         "0 = không giới hạn size, nhưng vẫn phải kiểm toàn vẹn")
+
+    def test_playwright_has_no_streaming_api(self):
+        """Ghi nhận lý do H4 không làm được trọn: API không tồn tại."""
+        from playwright.async_api import APIResponse
+        stream_names = [m for m in dir(APIResponse)
+                        if "stream" in m.lower() or "chunk" in m.lower()]
+        self.assertEqual(stream_names, [],
+                         "nếu Playwright thêm streaming, hãy làm lại H4 cho đúng")
+
+
 class TestNoBusyPoll(unittest.TestCase):
     """_racing_stop không được poll cờ dừng liên tục.
 

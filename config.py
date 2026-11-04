@@ -47,6 +47,13 @@ PENDING_LIMIT = 80
 # DOWNLOAD_TIMEOUT_MS nếu không rút -> nút Dừng trông như treo.
 STOP_TIMEOUT_MS = 2000
 
+# Trần kích thước một tệp. 0 = không giới hạn.
+# LƯU Ý: Playwright 1.54 KHÔNG có API streaming cho context.request — body() nạp
+# toàn bộ payload vào RAM. Vì vậy đây là chốt duy nhất chống hết RAM: kiểm
+# content-length TRƯỚC khi gọi body(). Server không gửi content-length thì vẫn
+# phải tải trọn (chặn mù sẽ bỏ sót media thật).
+MAX_FILE_MB = 512
+
 # Danh sách box gợi ý trong dropdown. Ô nhập vẫn gõ tay được: đổi tên miền
 # (rphang.kim -> rphang.beer) hoặc đổi hẳn đường dẫn đều chạy, không ép vào list.
 BOX_PRESETS = [
