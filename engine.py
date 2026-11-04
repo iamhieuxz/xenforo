@@ -138,24 +138,27 @@ class CrawlerEngine:
             if not context:
                 return
             try:
+                # Semaphore chỉ giữ trong lúc dò tác giả, KHÔNG giữ khi gọi
+                # crawl_thread: hàm đó tự acquire cùng semaphore. Giữ ở đây thì
+                # với TAB_SEM=1 là tự khoá mình (acquire lồng, không bao giờ trả).
                 async with self.tab_semaphore:
                     first_url = X.normalize_to_first_page(input_url)
                     self.log(f"[*] Đang bóc tách trang đầu tiên: {first_url}")
                     page, soup = await self.open_page(context, first_url, retries=1)
                     try:
-                        if soup is None:
-                            ok = False
-                            return
-                        author = X.resolve_author(soup)
+                        author = X.resolve_author(soup) if soup is not None else ""
                     finally:
                         await self.close_page(page)
 
-                    if not author:
-                        self.log("[-] Lỗi: Không thể xác định danh tính tác giả bài viết này!")
-                        ok = False
-                        return
-                    self.log(f"[✓] Đã định danh chính xác tác giả gốc: {author.upper()}")
-                    await self.crawl_thread(context, first_url, author)
+                if soup is None:
+                    ok = False
+                    return
+                if not author:
+                    self.log("[-] Lỗi: Không thể xác định danh tính tác giả bài viết này!")
+                    ok = False
+                    return
+                self.log(f"[✓] Đã định danh chính xác tác giả gốc: {author.upper()}")
+                await self.crawl_thread(context, first_url, author)
             except asyncio.CancelledError:
                 ok = False
                 raise

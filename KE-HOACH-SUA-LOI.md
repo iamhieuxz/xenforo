@@ -21,7 +21,7 @@
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [x] |
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [x] |
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [x] |
-| 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [ ] |
+| 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [x] |
 | 10 | M3 — test hermetic | 🟡 | P3 | [ ] |
 | 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [ ] |
 | 12 | H4 — streaming download | 🟠 | P2 | [ ] |
@@ -311,12 +311,33 @@ nằm dưới gốc đó.
 
 `crawl_link` giữ `tab_semaphore` rồi `crawl_thread` acquire lại.
 
-- [ ] 9.1 Bỏ `async with self.tab_semaphore` ở `crawl_link` (crawl_thread đã tự lo)
-- [ ] 9.2 Hoặc: `crawl_thread(..., already_locked=True)` để bỏ acquire lồng
-- [ ] 9.3 Clamp `TAB_SEM >= 1` và cảnh báo nếu < 2
-- [ ] 9.4 Test: `TAB_SEM=1`, `crawl_link` hoàn tất trong timeout
+- [x] 9.1 Bỏ `async with self.tab_semaphore` ở `crawl_link` (crawl_thread đã tự lo)
+- [x] 9.2 Hoặc: `crawl_thread(..., already_locked=True)` để bỏ acquire lồng
+- [x] 9.3 Clamp `TAB_SEM >= 1` và cảnh báo nếu < 2
+- [x] 9.4 Test: `TAB_SEM=1`, `crawl_link` hoàn tất trong timeout
 
-**Bằng chứng:** test 9.4 xanh
+**Bằng chứng:**
+
+```
+TAB_SEM=1 -> crawl_link HOAN TAT (khong deadlock)
+config._clamp(0)=1 | _clamp(-5)=1 | _clamp('x')=1
+
+python -m unittest test_v72.TestTabSemaphoreNesting -> Ran 3 tests, OK
+python -m unittest test_v72 -> Ran 83 tests, OK
+```
+
+**Negative control** — chạy đúng kịch bản test trên engine của commit trước khi sửa:
+
+```
+OLD engine (b04aa01) TAB_SEM=1 -> DEADLOCK  <-- test mới bắt được lỗi này
+```
+
+**Cách sửa:** chọn 9.1 — thu hẹp phạm vi `async with self.tab_semaphore` xuống
+chỉ còn khối dò tác giả, đưa `crawl_thread(...)` ra ngoài (nó tự acquire). Đơn
+giản hơn 9.2 vì không phải thêm tham số và không có hai đường code khác nhau.
+
+Kèm `config._clamp()` cho cả 4 semaphore: `Semaphore(0)` là khoá chết ngay từ
+đầu, giá trị âm thì asyncio ném `ValueError` lúc khởi tạo.
 
 ---
 

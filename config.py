@@ -18,6 +18,21 @@ DOWNLOAD_SEM = 10      # số request tải đồng thời
 THREAD_SEM = 2         # số thread 1 user được bóc đồng thời
 USER_SEM = 2           # số user được xử lý đồng thời
 
+# Chặn cấu hình làm app treo: Semaphore(0) là khoá chết ngay từ đầu, còn giá trị
+# âm thì asyncio ném ValueError. Việc acquire lồng nhau ở crawl_link đã được bỏ,
+# nhưng vẫn giữ sàn 1 để không ai đặt 0 rồi thắc mắc sao app im lặng.
+def _clamp(value, low=1):
+    try:
+        return max(low, int(value))
+    except (TypeError, ValueError):
+        return low
+
+
+TAB_SEM = _clamp(TAB_SEM)
+DOWNLOAD_SEM = _clamp(DOWNLOAD_SEM)
+THREAD_SEM = _clamp(THREAD_SEM)
+USER_SEM = _clamp(USER_SEM)
+
 SETTLE_MS = 0           # XenForo render server-side: đo thực tế settle=0 vẫn ra đủ 20 post.
                         # Tăng lên nếu bạn thấy thiếu bài (mạng chậm thì bọc thêm wait_for_selector).
 MAX_RETRIES = 3

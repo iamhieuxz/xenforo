@@ -628,6 +628,93 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestTabSemaphoreNesting(unittest.TestCase):
+    """crawl_link không được giữ tab_semaphore khi gọi crawl_thread.
+
+    Bug cũ: crawl_link `async with tab_semaphore` rồi gọi crawl_thread, mà hàm
+    đó acquire CHÍNH semaphore đó. Với TAB_SEM=1 là tự khoá mình vĩnh viễn —
+    README hướng dẫn chỉnh TAB_SEM trong config nên người dùng hạ xuống 1 là
+    app treo cứng, không log, không lỗi.
+    """
+
+    def _run_crawl_link(self, tab_sem):
+        import asyncio, threading
+        import engine
+
+        class _CM:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *e):
+                return False
+
+        class _Page:
+            async def goto(self, *a, **k):
+                pass
+
+            async def wait_for_timeout(self, *a):
+                pass
+
+            async def content(self):
+                return ("<html><div class='p-description'>"
+                        "<a class='username'>tacgia</a></div></html>")
+
+            async def close(self):
+                pass
+
+        class _Ctx:
+            async def new_page(self):
+                return _Page()
+
+        real_playwright, real_tab = engine.async_playwright, config.TAB_SEM
+        engine.async_playwright = lambda: _CM()
+        config.TAB_SEM = tab_sem
+        try:
+            async def run():
+                eng = engine.CrawlerEngine(cache=None, log=lambda *a, **k: None,
+                                           stop_event=threading.Event())
+                acquired = []
+
+                async def fake_connect(p):
+                    return _Ctx()
+
+                async def fake_crawl_thread(ctx, url, author, idx=1):
+                    # đúng như crawl_thread thật: acquire cùng semaphore
+                    async with eng.tab_semaphore:
+                        acquired.append(author)
+                    return author
+
+                eng.connect = fake_connect
+                eng.crawl_thread = fake_crawl_thread
+                eng._banner = lambda ok, t: None
+                await asyncio.wait_for(eng.crawl_link("https://r/threads/x.1/"),
+                                       timeout=3)
+                return acquired
+
+            return asyncio.run(run())
+        finally:
+            engine.async_playwright = real_playwright
+            config.TAB_SEM = real_tab
+
+    def test_single_tab_budget_does_not_deadlock(self):
+        """Đây chính là ca treo cứng trước khi sửa."""
+        acquired = self._run_crawl_link(1)
+        self.assertEqual(acquired, ["tacgia"], "phải chạy xong và bóc được tác giả")
+
+    def test_default_budget_still_works(self):
+        self.assertEqual(self._run_crawl_link(5), ["tacgia"])
+
+    def test_config_clamps_invalid_semaphores(self):
+        """Semaphore(0) là khoá chết, giá trị âm ném ValueError."""
+        self.assertEqual(config._clamp(0), 1)
+        self.assertEqual(config._clamp(-5), 1)
+        self.assertEqual(config._clamp("x"), 1)
+        self.assertEqual(config._clamp(None), 1)
+        self.assertEqual(config._clamp(7), 7)
+        for name in ("TAB_SEM", "DOWNLOAD_SEM", "THREAD_SEM", "USER_SEM"):
+            self.assertGreaterEqual(getattr(config, name), 1, f"{name} phải >= 1")
+
+
 class TestDownloadDirInjection(unittest.TestCase):
     """Engine phải dùng thư mục được TIÊM, không đọc config trực tiếp.
 
