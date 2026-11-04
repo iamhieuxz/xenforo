@@ -107,7 +107,7 @@ xenforo/
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
 ├── browser_launcher.py# Tự mở trình duyệt ở cổng CDP 9222
 ├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 143 test
+├── test_v72.py        # 154 test
 ├── _check_palette.py  # Self-check tương phản WCAG cho cả hai bảng màu
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
 ```
@@ -193,7 +193,7 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 python -m unittest test_v72
 ```
 
-143 test, chạy khoảng 6 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
+154 test, chạy khoảng 7 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
 
 Test **hermetic**: `setUpModule` trỏ `config.DOWNLOAD_DIR` và biến
 `RPHANG_DIR` về thư mục tạm, nên suite không mở và không ghi
@@ -247,6 +247,20 @@ Khi Cốc Cốc đã chạy, nó bỏ qua cờ debug và chỉ mở tab. Đóng 
 - Một thread nhiều trang được app bấm "Trang sau" để lấy hết, nhưng mỗi trang phải render xong mới sang trang kế tiếp nên thread dài sẽ chậm.
 - `xenforo_parse.extract_post_media()` **sửa** cây soup truyền vào (gỡ quote/quảng cáo bằng `decompose()`). Cần bản không sửa input thì dùng `extract_post_media_copy()`.
 - Folder của một bài được đặt theo ngày mở thread. Nếu server không trả ngày ở bất kỳ nguồn nào, folder dùng nhãn `[khong-ngay]` — **ổn định giữa các lần quét**, không đổi tên. Ngày đã biết được lưu trong bảng `thread_index` của SQLite và dùng lại cho các lần sau.
+
+## Phạm vi quét
+
+Khi quét theo tác giả, app chỉ mở **thread của đúng tác giả đó**. Bộ lọc được giữ
+qua mọi trang: XenForo trả link phân trang trần (không mang `?starter=`), nên app
+tự gắn lại query string của trang hiện tại. Nếu không, từ trang 2 trở đi box sẽ
+hiện toàn bộ thread của mọi người — đó là lỗi cũ làm app mở cả nghìn bài.
+
+Tác giả được đọc từ `data-author` **trên item của trang danh sách**, nên lọc xảy
+ra trước khi mở thread. Nhật ký nói rõ:
+
+```
+[+] TRAICUBE: 3 thread trong 5 trang (97 bài người khác đã bỏ qua).
+```
 
 ## Quét lại một bài đã có
 

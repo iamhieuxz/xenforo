@@ -224,8 +224,12 @@ class CrawlerEngine:
         base = box_url.split('?')[0]
         first = f"{base}?starter={urllib.parse.quote(author)}"
 
-        thread_urls = set()
+        thread_urls = []
         visited = set()
+        pages = 0
+        skipped = 0
+        author_key = author.lower().strip()
+
         async with self.tab_semaphore:
             page, soup = await self.open_page(context, first)
             try:
@@ -237,16 +241,38 @@ class CrawlerEngine:
                     visited.add(current)
                     if soup is None:
                         break
-                    links, current = X.parse_thread_links(soup, current)
-                    thread_urls.update(links)
+                    pages += 1
+
+                    # Lọc NGAY ở danh sách: chỉ giữ thread có tác giả khớp.
+                    # Trước đây gom hết link rồi mới mở từng thread để kiểm
+                    # data-author -> box 100 trang là mở cả nghìn thread, rất
+                    # chậm và dễ bị chặn. XenForo ghi data-author trên item của
+                    # box nên lọc được từ đây.
+                    for item in soup.find_all('div', class_=X.S.STRUCT_THREAD_RE):
+                        starter = X.thread_starter(item)
+                        if starter and starter.lower() != author_key:
+                            skipped += 1
+                            continue
+                        found, _ = X.parse_thread_links(
+                            X.soup_of_single(item), current)
+                        for u in found:
+                            if u not in thread_urls:
+                                thread_urls.append(u)
+
+                    # Sang trang: phải GIỮ ?starter=..., nếu không XenForo trả về
+                    # toàn bộ box. parse_thread_links đã lo việc này.
+                    _, current = X.parse_thread_links(soup, current)
                     if current:
                         soup = await self.refetch(page, current)
             finally:
                 await self.close_page(page)
 
         if not thread_urls:
+            self.log(f"   [•] {author.upper()}: không có bài nào trong box này"
+                     f" ({pages} trang đã đọc, {skipped} bài của người khác).")
             return
-        self.log(f"   [+] {author.upper()}: Định vị thành công {len(thread_urls)} Thread bài viết.")
+        self.log(f"   [+] {author.upper()}: {len(thread_urls)} thread trong "
+                 f"{pages} trang ({skipped} bài người khác đã bỏ qua).")
 
         # N worker cố định nhận việc từ queue, thay vì tạo một task cho MỖI
         # thread rồi gather tất cả: box 5.000 thread sinh 5.000 coroutine cùng
@@ -292,7 +318,8 @@ class CrawlerEngine:
                 # server thiếu ngày (trang lỗi, theme khác) là folder đổi tên ->
                 # app coi là bài mới và tải lại toàn bộ dù file đã có.
                 thread_key = thread_url.split('?')[0].split('#')[0]
-                remembered = self.cache.thread_date(thread_key)
+                remembered = (self.cache.thread_date(thread_key)
+                              if self.cache is not None else None)
                 if remembered:
                     if not date_prefix:
                         date_prefix = remembered
@@ -305,7 +332,8 @@ class CrawlerEngine:
                     self.log("   [!] Không xác định được ngày mở bài; dùng folder "
                              "'khong-ngay' (sẽ ổn định cho các lần sau).")
                 os.makedirs(folder, exist_ok=True)
-                self.cache.remember_thread_date(thread_key, date_prefix, folder)
+                if self.cache is not None:
+                    self.cache.remember_thread_date(thread_key, date_prefix, folder)
 
                 current = thread_url
                 visited = set()

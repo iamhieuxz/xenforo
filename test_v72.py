@@ -371,6 +371,200 @@ class TestEngineWiring(unittest.TestCase):
         self.assertIn("folder_index", params)
 
 
+class TestBoxScopeIsNotLeaked(unittest.TestCase):
+    """Quét 1 tác giả trong box KHÔNG được kéo cả box.
+
+    Lỗi thật người dùng báo: "giới hạn trong box rồi mà sao quét cả nghìn bài".
+    Nguyên nhân: XenForo trả link phân trang TRẦN (`/box/x.6/page-2`), không mang
+    `?starter=tacgia`. Engine dùng thẳng link đó nên từ trang 2 trở đi box hiện
+    toàn bộ thread của mọi tác giả. Box 100 trang = mở ~2000 thread rồi mới lọc.
+    """
+
+    BOX = "https://rphang.beer/box/test-box.6/"
+
+    def test_next_page_keeps_starter_filter(self):
+        """Đây chính là lỗi gốc: trang 2 phải còn ?starter."""
+        html = ('<a class="pageNav-jump--next" href="/box/test-box.6/page-2">Next</a>')
+        _, nxt = X.parse_thread_links(soup_of(html), f"{self.BOX}?starter=tacgia")
+        self.assertIsNotNone(nxt)
+        self.assertIn("starter=tacgia", nxt,
+                      f"trang kế phải giữ bộ lọc, đang là {nxt}")
+
+    def test_next_page_keeps_trailing_slash(self):
+        """Thiếu `/` cuối làm visited-set coi hai trang khác nhau là một."""
+        html = ('<a class="pageNav-jump--next" href="/box/test-box.6/page-2">Next</a>')
+        _, nxt = X.parse_thread_links(soup_of(html), f"{self.BOX}?starter=tacgia")
+        self.assertTrue(nxt.rstrip("?starter=tacgia").endswith("/"),
+                        f"phải giữ dấu / cuối path: {nxt}")
+
+    def test_filter_survives_three_pages(self):
+        """Bộ lọc phải sống qua nhiều trang, không chỉ trang 2."""
+        url = f"{self.BOX}?starter=tacgia"
+        for page in (2, 3, 4):
+            html = (f'<a class="pageNav-jump--next" '
+                    f'href="/box/test-box.6/page-{page}">Next</a>')
+            _, url = X.parse_thread_links(soup_of(html), url)
+            self.assertIn("starter=tacgia", url, f"mất lọc ở trang {page}: {url}")
+
+    def test_existing_query_is_not_overwritten(self):
+        """Link phân trang có sẵn tham số riêng thì giữ nguyên, không ghi đè."""
+        out = X.with_query_of("/box/x.6/page-2?sort=date", "/box/x.6/?starter=a")
+        self.assertIn("sort=date", out)
+        self.assertNotIn("starter", out)
+
+    def test_no_query_on_source_leaves_url_alone(self):
+        out = X.with_query_of("/box/x.6/page-2", "/box/x.6/")
+        self.assertEqual(out, "/box/x.6/page-2")
+
+    def test_thread_starter_reads_data_author(self):
+        """Engine truyền vào một Tag (item trong box), không phải soup cả trang."""
+        item = soup_of('<div class="structItem structItem--thread" data-author="TraiCube">'
+                       '<div class="structItem-title"><a href="/threads/a.1/">A</a>'
+                       '</div></div>').find('div', class_='structItem--thread')
+        self.assertEqual(X.thread_starter(item), "TraiCube")
+
+    def test_thread_starter_accepts_tag_not_whole_soup(self):
+        """Gọi với soup cả trang thì trả '' — chỗ gọi phải truyền item.
+
+        Ghi lại bằng test để nếu ai đổi engine sang truyền soup, test này nhắc.
+        """
+        whole = soup_of('<div class="structItem structItem--thread" data-author="A">'
+                        '</div>')
+        self.assertEqual(X.thread_starter(whole), "",
+                         "soup cả trang không mang data-author của item")
+        item = whole.find('div', class_='structItem--thread')
+        self.assertEqual(X.thread_starter(item), "A")
+
+    def test_thread_starter_falls_back_to_username_link(self):
+        item = soup_of('<div class="structItem structItem--thread">'
+                       '<div class="structItem-title"><a href="/threads/a.1/">A</a></div>'
+                       '<a class="username">AiDo</a></div>'
+                       ).find('div', class_='structItem--thread')
+        self.assertEqual(X.thread_starter(item), "AiDo")
+
+    def test_thread_starter_empty_when_unknown(self):
+        self.assertEqual(X.thread_starter(soup_of('<div class="x"></div>')), "")
+
+    def test_engine_filters_before_opening_threads(self):
+        """Engine phải lọc ở bước danh sách, không mở hết rồi mới bỏ qua."""
+        import inspect
+        import engine
+        src = inspect.getsource(engine.CrawlerEngine.crawl_user)
+        self.assertIn("thread_starter", src,
+                      "phải đọc data-author trên item box để lọc sớm")
+        self.assertNotIn("thread_urls.update(links)", src,
+                         "không được gom hết link rồi mới lọc sau")
+
+    def test_end_to_end_only_author_threads_opened(self):
+        """Box 5 trang x 20 bài, chỉ 3 bài của tác giả -> mở đúng 3 thread."""
+        import asyncio
+        import engine
+        from cache import MediaCache
+
+        opened = []
+        author = "tacgia"
+
+        def box_page(n):
+            items = []
+            for i in range(20):
+                if n == 1 and i < 2:
+                    slug, who = f"bai-cua-toi-{i+1}.{101+i}", author
+                elif n == 3 and i == 0:
+                    slug, who = "bai-cua-toi-3.103", author
+                else:
+                    slug, who = f"thread-{n}-{i}.{n}{i:02d}", f"nguoi{n}{i}"
+                items.append(
+                    f'<div class="structItem structItem--thread" data-author="{who}">'
+                    f'<div class="structItem-title">'
+                    f'<a data-tp-primary="on" href="/threads/{slug}/">B</a>'
+                    f'</div></div>')
+            nxt = ""
+            if n < 5:
+                nxt = (f'<a class="pageNav-jump--next" '
+                       f'href="/box/test-box.6/page-{n+1}">N</a>')
+            return f'<html><body>{"".join(items)}{nxt}</body></html>'
+
+        thread_html = ('<html><body><h1 class="p-title-value">Bai</h1>'
+                       '<article class="message--post" data-author="tacgia" data-content="p">'
+                       '<div class="message-body"><img src="/m/x.jpg"></div></article>'
+                       '</body></html>')
+
+        def html_for(url):
+            if "/threads/" in url:
+                return thread_html
+            n = 1
+            for k in range(2, 10):
+                if f"page-{k}" in url:
+                    n = k
+            return box_page(n)
+
+        class _Page:
+            async def goto(self, url, **k):
+                self.url = url
+                opened.append(url)
+
+            async def wait_for_timeout(self, *a):
+                pass
+
+            async def content(self):
+                return html_for(self.url)
+
+            async def close(self):
+                pass
+
+        class _Ctx:
+            def __init__(self):
+                self.request = self
+
+            async def new_page(self):
+                return _Page()
+
+            async def get(self, url, headers=None, timeout=None):
+                class R:
+                    status = 200
+                    headers = {"content-type": "image/jpeg", "content-length": "2"}
+
+                    async def body(self):
+                        return b"xx"
+
+                    async def dispose(self):
+                        pass
+                return R()
+
+        class _NoStop:
+            @staticmethod
+            def is_set():
+                return False
+
+        tmp = tempfile.mkdtemp(prefix="boxscope")
+        real = config.DOWNLOAD_DIR
+        config.DOWNLOAD_DIR = tmp
+        try:
+            async def run():
+                cache = MediaCache(os.path.join(tmp, "c.db"))
+                eng = engine.CrawlerEngine(cache=cache, log=lambda *a, **k: None,
+                                           stop_event=_NoStop(), download_dir=tmp)
+                async def connect(p):
+                    return _Ctx()
+                eng.connect = connect
+                await eng.crawl_user(_Ctx(), author, 1, 1,
+                                     "https://rphang.beer/box/test-box.6/")
+                cache.close()
+
+            asyncio.run(run())
+        finally:
+            config.DOWNLOAD_DIR = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        threads = [u for u in opened if "/threads/" in u]
+        box_pages = [u for u in opened if "/threads/" not in u]
+        self.assertEqual(len(box_pages), 5, f"phải đọc đúng 5 trang box: {box_pages}")
+        self.assertEqual(len(threads), 3,
+                         f"chỉ mở 3 thread của tác giả, đang mở {len(threads)}: {threads}")
+        for u in box_pages:
+            self.assertIn("starter=tacgia", u, f"mất bộ lọc ở {u}")
+
+
 class TestRescanFullSweep(unittest.TestCase):
     """Bài đã có trong SQL vẫn phải quét ĐẦY ĐỦ, không lướt qua.
 

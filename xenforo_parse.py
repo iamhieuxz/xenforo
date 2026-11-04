@@ -8,7 +8,7 @@ bằng decompose() — xem docstring của hàm đó.
 import os
 import re
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -102,7 +102,15 @@ def resolve_author(soup):
 
 
 def parse_thread_links(soup, page_url):
-    """Trả về (danh sách link thread, url trang kế tiếp) của 1 trang box."""
+    """Trả về (danh sách link thread, url trang kế tiếp) của 1 trang box.
+
+    QUAN TRỌNG: url trang kế được dựng lại để GIỮ query string của trang hiện
+    tại (ví dụ `?starter=traicube`). XenForo trả link phân trang trần
+    (`/box/x.6/page-2`), không mang filter — nếu dùng thẳng link đó thì từ trang
+    2 trở đi box hiện TOÀN BỘ thread của mọi tác giả, và app tải cả nghìn bài
+    rồi mới lọc ở bước sau. Đây chính là lỗi "giới hạn trong box mà quét cả
+    nghìn bài".
+    """
     links = []
     for item in soup.find_all('div', class_=S.STRUCT_THREAD_RE):
         title_div = item.find('div', class_=S.STRUCT_TITLE_RE)
@@ -119,8 +127,62 @@ def parse_thread_links(soup, page_url):
             links.append(full)
 
     nxt = soup.find('a', class_=S.PAGENAV_NEXT_RE)
-    next_url = urljoin(page_url, nxt['href']) if nxt and nxt.get('href') else None
+    next_url = None
+    if nxt and nxt.get('href'):
+        next_url = with_query_of(urljoin(page_url, nxt['href']), page_url)
     return links, next_url
+
+
+def with_query_of(url, source_url):
+    """Gắn query string của `source_url` vào `url` nếu url đó chưa có query.
+
+    Tách riêng để test được và để chỗ gọi đọc rõ ý: "mang bộ lọc sang trang sau".
+    Không bao giờ ghi đè query đã có — link phân trang có sẵn tham số riêng thì
+    phải giữ nguyên.
+
+    Giữ cả DẤU `/` cuối path: XenForo phân biệt `/box/x.6/page-2` với
+    `/box/x.6/page-2/`. Thiếu dấu `/` thì URL trang 2 và trang 3 có thể chuẩn
+    hoá về cùng một dạng, làm visited-set tưởng là lặp và dừng sớm.
+    """
+    parts = urlsplit(url)
+    if parts.query:
+        return url
+    src = urlsplit(source_url)
+    if not src.query:
+        return url
+    path = parts.path
+    # Đồng bộ kiểu có/không có `/` cuối với trang nguồn, để các trang cùng một
+    # dạng URL — visited-set so sánh chuỗi nên dạng khác nhau là "trang khác".
+    src_has_slash = src.path.endswith('/')
+    if src_has_slash and not path.endswith('/'):
+        path += '/'
+    elif not src_has_slash and path.endswith('/'):
+        path = path.rstrip('/')
+    return urlunsplit((parts.scheme, parts.netloc, path, src.query, parts.fragment))
+
+
+def thread_starter(soup):
+    """Tác giả mở thread, đọc từ trang danh sách box (không cần mở thread).
+
+    XenForo đặt `data-author` trên item của box, nên lọc được NGAY ở bước danh
+    sách: chỉ mở những thread của tác giả cần quét, thay vì mở hết rồi bỏ qua.
+    Trả "" nếu không đọc được (khi đó chỗ gọi phải mở thread để kiểm).
+    """
+    for attr in ('data-author', 'data-last-author'):
+        v = soup.get(attr)
+        if v and v.strip():
+            return v.strip()
+    node = soup.select_one('.structItem-parts a.username, a.username')
+    return node.get_text(strip=True) if node else ""
+
+
+def soup_of_single(item):
+    """Bọc một item box thành soup riêng để dùng lại parse_thread_links.
+
+    parse_thread_links() quét cả trang; khi đã lọc được item nào cần lấy, ta chỉ
+    muốn link của chính item đó, không phải cả trang.
+    """
+    return BeautifulSoup(str(item), 'lxml')
 
 
 def _strip_junk(post):

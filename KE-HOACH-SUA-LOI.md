@@ -4,8 +4,8 @@
 > Quy tắc làm việc: **mỗi bước một commit**, chạy `python audit_repro.py` + `python -m unittest test_v72`
 > trước và sau khi sửa. Chỉ tick khi có bằng chứng cụ thể ở cột "Bằng chứng".
 
-**Điểm hiện tại: 91/100** (gốc 64 → P0 78 → P1 86 → P2/P3 88 → 91). **143 test xanh.**
-Tất cả 17 bước đã hoàn tất.
+**Điểm hiện tại: 92/100** (gốc 64 → 78 → 86 → 88 → 91 → 92). **154 test xanh.**
+Tất cả 19 bước đã hoàn tất.
 
 ---
 
@@ -30,6 +30,8 @@ Tất cả 17 bước đã hoàn tất.
 | 14 | Đóng app giữa lúc quét (phát sinh) | 🟠 | P1 | [x] |
 | 15 | Ngày mở bài ra 0000 (phát sinh) | 🔴 | P0 | [x] |
 | 16 | Quét lại đầy đủ + báo cáo số tệp | 🔴 | P0 | [x] |
+| 17 | Làm lại giao diện (audit UX) | 🟠 | P1 | [x] |
+| 18 | Lọt phạm vi box khi phân trang | 🔴 | P0 | [x] |
 
 ---
 
@@ -599,6 +601,64 @@ lọt.
 | 2026-11-05 | 14 | đóng app (phát sinh) | `WM_DELETE_WINDOW` → `on_close`; +5 test → 117 |
 | 2026-11-05 | 15 | ngày mở bài (phát sinh) | chuỗi fallback nhiều nguồn + `thread_index`; +10 test → 127 |
 | 2026-11-05 | 16 | quét lại đầy đủ | chống trùng file, báo cáo chi tiết; +16 test → 143 |
+| 2026-11-05 | 17 | làm lại giao diện | audit UX, bố cục mới, minsize động; 143 test |
+| 2026-11-05 | 18 | lọt phạm vi box | mất `?starter=` từ trang 2; +11 test → 154 |
+
+---
+
+## Bước 18 (phát sinh) — quét 1 tác giả nhưng kéo cả box
+
+**Người dùng báo:** "đã giới hạn trong box rồi mà sao quét cả nghìn bài".
+
+**Nguyên nhân — một dòng, đo được:**
+
+```
+trang 1: https://rphang.beer/box/thap-cam-box.6/?starter=traicube
+trang 2: https://rphang.beer/box/thap-cam-box.6/page-2          ← MẤT ?starter
+```
+
+XenForo trả link phân trang **trần**, không mang query string. `parse_thread_links`
+dùng thẳng link đó, nên **từ trang 2 trở đi box hiện toàn bộ thread của mọi tác
+giả**. Engine gom hết vào `thread_urls` rồi mới mở từng thread để kiểm
+`data-author` — tức là **mở hàng nghìn thread** rồi bỏ qua phần lớn.
+
+Quy mô: box 100 trang × 20 bài = **~2.000 thread bị mở** thay vì vài chục.
+
+**Đã sửa hai tầng:**
+
+- [x] 18.1 `with_query_of()`: mang query string của trang hiện tại sang trang kế
+- [x] 18.2 Giữ dấu `/` cuối path — thiếu nó thì `page-2` và `page-2/` khác chuỗi,
+      visited-set coi là hai trang khác nhau và dừng sớm
+- [x] 18.3 `thread_starter()`: đọc `data-author` **trên item của box**, lọc ngay
+      ở bước danh sách, chỉ mở thread của tác giả cần quét
+- [x] 18.4 `soup_of_single()`: lấy link của riêng item đã lọc
+- [x] 18.5 Báo cáo rõ: `3 thread trong 5 trang (97 bài người khác đã bỏ qua)`
+- [x] 18.6 Engine chịu được `cache=None` (trước đó ném `AttributeError`)
+
+**Bằng chứng end-to-end** (box 5 trang × 20 bài, 3 bài của tác giả):
+
+```
+Số URL đã mở        : 8      (5 trang box + 3 thread)
+Số trang box đã đọc : 5
+Số thread đã mở     : 3      ← đúng, trước khi sửa sẽ là ~100
+
+[+] TACGIA: 3 thread trong 5 trang (97 bài người khác đã bỏ qua).
+[✓] TACGIA: Bài 1 tải mới 1 ảnh [1 bài của chủ thớt, 1 trang]
+[•] TACGIA: Bài 3 đã có đủ 1 media [...] — không cần tải lại.
+```
+
+**Negative control** — chạy đúng kịch bản trên code cũ:
+
+```
+CODE CŨ: trang 2 = /box/test-box.6/page-2                    con ?starter? False
+CODE MỚI: trang 2 = /box/test-box.6/page-2/?starter=tacgia   con ?starter? True
+```
+
+**Hai lỗi tôi tự gây ra khi viết test cho bước này** (test bắt được, đã sửa):
+1. Harness dùng `opened[-1]` trong `new_page()` — nhưng `new_page()` chạy trước
+   `goto()`, nên nội dung trang bị lệch một nhịp.
+2. `thread_starter()` nhận **Tag** (item), test lại truyền **soup cả trang**.
+   Đã thêm test ghi rõ hợp đồng này để lần sau không nhầm.
 
 ---
 
