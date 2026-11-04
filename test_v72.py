@@ -545,6 +545,63 @@ class TestDownloadProgress(unittest.TestCase):
         self.assertEqual(config.SETTLE_MS, 0)
 
 
+class TestEngineBanner(unittest.TestCase):
+    """Banner cuối phiên phải phản ánh đúng kết quả.
+
+    Bug cũ: `ok = False` nằm trong closure user_worker -> gán vào biến cục bộ
+    của closure, biến ngoài không đổi, nên quét 30 user hỏng hết vẫn báo
+    "ĐÃ HOÀN TẤT". Loại lỗi tệ nhất vì nó phá niềm tin vào chính báo cáo.
+    """
+
+    def _run(self, behaviours):
+        """behaviours: list hành vi cho từng user. Trả danh sách ok của _banner."""
+        import asyncio
+        import threading
+        import engine
+
+        banners = []
+
+        class _CM:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        real = engine.async_playwright
+        engine.async_playwright = lambda: _CM()
+        try:
+            eng = engine.CrawlerEngine(
+                cache=None, log=lambda *a, **k: None, stop_event=threading.Event())
+
+            async def fake_connect(p):
+                return object()
+
+            async def fake_crawl_user(context, author, idx, total, box_url):
+                if behaviours[author] == "raise":
+                    raise RuntimeError("mô phỏng user hỏng")
+
+            eng.connect = fake_connect
+            eng.crawl_user = fake_crawl_user
+            eng._banner = lambda ok, title: banners.append(ok)
+            asyncio.run(eng.crawl_users(list(behaviours), "https://r/box/x.140/"))
+        finally:
+            engine.async_playwright = real
+        return banners
+
+    def test_all_users_failing_reports_failure(self):
+        banners = self._run({"a": "raise", "b": "raise"})
+        self.assertEqual(banners, [False],
+                         "mọi user lỗi -> banner phải báo thất bại, không được báo xong")
+
+    def test_one_failing_user_is_enough(self):
+        banners = self._run({"a": "fine", "b": "raise"})
+        self.assertEqual(banners, [False], "một user lỗi là đủ để banner báo thất bại")
+
+    def test_all_users_ok_reports_success(self):
+        self.assertEqual(self._run({"a": "fine"}), [True], "không lỗi thì báo thành công")
+
+
 class TestLocalUserIndex(unittest.TestCase):
     """Danh sách user local phải nạp 1 lần, sau đó đọc từ DB."""
 

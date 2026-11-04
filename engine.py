@@ -159,7 +159,10 @@ class CrawlerEngine:
 
     # ---------- quét nhiều user ----------
     async def crawl_users(self, user_list, box_url):
-        ok = True
+        # Dùng dict thay vì biến cục bộ: user_worker là closure, gán `ok = False`
+        # trong đó tạo biến CỤC BỘ của closure và biến ngoài không bao giờ đổi ->
+        # banner vẫn báo "ĐÃ HOÀN TẤT" dù mọi user đều lỗi.
+        state = {"ok": True}
         total = len(user_list)
         async with async_playwright() as p:
             context = await self.connect(p)
@@ -175,19 +178,19 @@ class CrawlerEngine:
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
-                        ok = False
+                        state["ok"] = False
                         self.log(f"[-] Lỗi user {user}: {e}")
 
             try:
                 await asyncio.gather(*[user_worker(u, i) for i, u in enumerate(user_list, 1)])
             except asyncio.CancelledError:
-                ok = False
+                state["ok"] = False
                 raise
             except Exception as e:
-                ok = False
+                state["ok"] = False
                 self.log(f"[-] Tiến trình gặp gián đoạn: {e}")
 
-        self._banner(ok, "TOÀN BỘ TIẾN TRÌNH ĐỒNG BỘ CÁC USER")
+        self._banner(state["ok"], "TOÀN BỘ TIẾN TRÌNH ĐỒNG BỘ CÁC USER")
 
     def _banner(self, ok, title):
         self.log("\n========================================")

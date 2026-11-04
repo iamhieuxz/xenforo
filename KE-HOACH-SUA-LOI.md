@@ -13,7 +13,7 @@
 | Bước | Nội dung | Mức | Ưu tiên | Trạng thái |
 |---|---|---|---|---|
 | 0 | Baseline & khung kiểm chứng | — | Bắt buộc | [x] |
-| 1 | C1 — `nonlocal ok` | 🔴 | P0 | [ ] |
+| 1 | C1 — `nonlocal ok` | 🔴 | P0 | [x] |
 | 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [ ] |
 | 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [ ] |
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [ ] |
@@ -63,12 +63,21 @@ database file`. Đây chính là **M3** biểu hiện — baseline xanh chỉ kh
 
 Biến `ok` bị rebind trong closure `user_worker` nên banner luôn báo thành công.
 
-- [ ] 1.1 Thay `ok = True` bằng accumulator `state = {"ok": True}`
-- [ ] 1.2 Cập nhật 3 chỗ gán: dòng trong `user_worker`, trong `except CancelledError`, trong `except Exception`
-- [ ] 1.3 `_banner(state["ok"], ...)`
-- [ ] 1.4 Thêm test vào `test_v72.py`: mock `crawl_user` raise → `_banner` nhận `False`
+- [x] 1.1 Thay `ok = True` bằng accumulator `state = {"ok": True}`
+- [x] 1.2 Cập nhật 3 chỗ gán: dòng trong `user_worker`, trong `except CancelledError`, trong `except Exception`
+- [x] 1.3 `_banner(state["ok"], ...)`
+- [x] 1.4 Thêm test vào `test_v72.py`: mock `crawl_user` raise → `_banner` nhận `False`
 
-**Bằng chứng:** `audit_repro.py` → `c1 ... OK`
+**Bằng chứng:**
+
+```
+python audit_repro.py -> [C1] OK  (2/2 user lỗi, _banner nhận ok=[False])
+python -m unittest test_v72.TestEngineBanner -> Ran 3 tests, OK
+python -m unittest test_v72 -> Ran 55 tests, OK   (52 cũ + 3 mới)
+```
+
+Test mới phủ 3 tình huống: tất cả user lỗi, một user lỗi trong nhiều user,
+và tất cả thành công — tránh trường hợp sửa quá tay thành luôn báo thất bại.
 
 ---
 
