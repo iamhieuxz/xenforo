@@ -4,7 +4,8 @@
 > Quy tắc làm việc: **mỗi bước một commit**, chạy `python audit_repro.py` + `python -m unittest test_v72`
 > trước và sau khi sửa. Chỉ tick khi có bằng chứng cụ thể ở cột "Bằng chứng".
 
-**Điểm hiện tại: 64/100.** Mục tiêu: P0 → 78, P0+P1 → 85.
+**Điểm hiện tại: 86/100** (gốc 64 → P0 78 → P1 86). Test: **83 test xanh**.
+P2–P3 (bước 10–13) chưa làm.
 
 ---
 
@@ -400,3 +401,30 @@ Kèm `config._clamp()` cho cả 4 semaphore: `Semaphore(0)` là khoá chết nga
 |---|---|---|---|
 | 2026-11-05 | — | Đánh giá hoàn tất | 64/100, 4 lỗi P0 đã kiểm chứng |
 | 2026-11-05 | 0 | Baseline chốt | 52 test OK; `audit_repro.py` báo 4/4 lỗi; thêm `requirements.txt` |
+| 2026-11-05 | 1 | C1 xong | `state{"ok"}` thay closure rebind; +3 test → 55 |
+| 2026-11-05 | 2 | C2 xong | `seen_hashes` chỉ ghi khi OK; +2 test → 57 |
+| 2026-11-05 | 3 | C3 xong | sentinel `_TIMEOUT`; +2 test → 59 |
+| 2026-11-05 | 4 | C4 xong | hash vào tên video/file; +4 test → 63. **Hết P0** |
+| 2026-11-05 | 5 | H1 xong | `selectors.py` → `xf_selectors.py`; +4 test → 67 |
+| 2026-11-05 | 6 | H2 xong | `_apply_running_state`, bind lại phím, giữ input; +5 test → 72 |
+| 2026-11-05 | 7 | H3 xong | khoá ở `_launch`, chặn 4 đường vào; +4 test → 76 |
+| 2026-11-05 | 8 | M4 xong | tiêm `download_dir`; +4 test → 80 |
+| 2026-11-05 | 9 | M5 xong | bỏ acquire lồng + clamp semaphore; +3 test → 83. **Hết P1** |
+
+## Trạng thái kiểm chứng cuối (sau bước 9)
+
+```
+python audit_repro.py      -> Tất cả 4 lỗi P0 đã được sửa.        (exit 0)
+python -m unittest test_v72 -> Ran 83 tests, OK
+python _check_palette.py    -> Tat ca cap dat WCAG 2.2 AA.        (exit 0)
+python -c "import selectors, asyncio" -> default selectors OK
+```
+
+## Việc còn lại
+
+| Bước | Nội dung | Ưu tiên |
+|---|---|---|
+| 10 | M3 — test hermetic | P3 |
+| 11 | M1+M6 — race thật & bounded queue | P2 |
+| 12 | H4 — streaming download | P2 |
+| 13 | N1/N2/N3 — tài liệu, backoff, giới hạn dung lượng | P3 |

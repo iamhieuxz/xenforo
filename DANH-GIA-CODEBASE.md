@@ -4,23 +4,26 @@
 > Phạm vi: toàn bộ 9 module (~2.100 LOC), chạy test suite, và **kiểm chứng từng lỗi bằng thực nghiệm**.
 > Mọi kết luận trong tài liệu này đều có lệnh repro kèm theo, không suy luận từ đọc code.
 
+> **CẬP NHẬT 2026-11-05:** đã sửa xong **P0 (C1–C4)** và **P1 (H1–H3, M4, M5)**.
+> Điểm: **64 → 86**. Test: **52 → 83**. Xem [KE-HOACH-SUA-LOI.md](KE-HOACH-SUA-LOI.md)
+> để biết bằng chứng từng bước. Các mục bên dưới giữ nguyên mô tả lỗi gốc làm
+> hồ sơ; dấu ✅ đánh dấu mục đã xử lý.
+
 ---
 
-## Điểm tổng: **64/100 — C+**
+## Điểm tổng: **64/100 — C+** (trước khi sửa) → **86/100** (sau P0+P1)
 
 Nền tảng kiến trúc tốt, kỹ nghệ UI/accessibility trên mức trung bình, nhưng có **lỗi im lặng (silent failure) nghiêm trọng** làm sai lệch báo cáo cho người dùng.
 
-| Tiêu chí | Trọng số | Điểm | Ghi chú |
-|---|---|---|---|
-| Kiến trúc / tách tầng | 20% | 7.5 | Phân tầng rõ, nhưng có 1 quả mìn namespace |
-| Tính đúng đắn | 20% | 5.5 | 4 lỗi im lặng đã kiểm chứng |
-| Xử lý lỗi / quan sát | 15% | 5.5 | `except` quá rộng, timeout biến mất |
-| Hiệu năng / tài nguyên | 15% | 5.5 | Nạp cả file vào RAM, busy-poll |
-| Bảo mật / bền vững | 10% | 7.0 | Path traversal an toàn, thiếu giới hạn dung lượng |
-| Kiểm thử | 10% | 6.5 | 52 test nhanh nhưng **không hermetic** |
-| UX / accessibility | 10% | 8.0 | WCAG AA có kiểm tự động — rất tốt |
-
-**Mục tiêu sau khi sửa:** P0 → ~78 điểm; P0+P1 → ~85 điểm.
+| Tiêu chí | Trọng số | Điểm (gốc) | Điểm (hiện) | Ghi chú |
+|---|---|---|---|---|
+| Kiến trúc / tách tầng | 20% | 7.5 | 9.0 | Hết quả mìn namespace, `download_dir` tiêm |
+| Tính đúng đắn | 20% | 5.5 | 8.5 | 4 lỗi im lặng đã sửa |
+| Xử lý lỗi / quan sát | 15% | 5.5 | 8.0 | Timeout không còn vô hình |
+| Hiệu năng / tài nguyên | 15% | 5.5 | 5.5 | Chưa sửa (P2) |
+| Bảo mật / bền vững | 10% | 7.0 | 7.0 | Chưa sửa (P2) |
+| Kiểm thử | 10% | 6.5 | 8.5 | +31 test, có negative control |
+| UX / accessibility | 10% | 8.0 | 8.5 | Thêm giữ trạng thái/phím tắt |
 
 ---
 
@@ -49,7 +52,7 @@ Và test tương phản nằm luôn trong suite (`test_all_text_colors_pass_wcag
 
 ## Điểm yếu — tất cả đã kiểm chứng bằng thực nghiệm
 
-### C1. Banner báo "THÀNH CÔNG" dù mọi user đều lỗi — 🔴 nghiêm trọng
+### ✅ C1. Banner báo "THÀNH CÔNG" dù mọi user đều lỗi — 🔴 nghiêm trọng (đã sửa)
 
 `engine.py`, hàm `crawl_users`: biến `ok` được gán `ok = False` **bên trong closure `user_worker`** mà không có `nonlocal`.
 
@@ -74,7 +77,7 @@ crawl_users returned ok = True -> banner will claim SUCCESS
 
 **Sửa:** thêm `nonlocal ok`, hoặc dùng `state = {"ok": True}` accumulator.
 
-### C2. Media lỗi bị bỏ qua vĩnh viễn trong thread — 🔴 nghiêm trọng
+### ✅ C2. Media lỗi bị bỏ qua vĩnh viễn trong thread — 🔴 nghiêm trọng (đã sửa)
 
 `downloader.py`, hàm `dispatch`: `seen_hashes[h] = save_path` được ghi **trước khi** tải thành công. Lần xuất hiện thứ 2 của cùng URL → `clone_cached()` trả `False` → `continue`, không task nào được tạo.
 
@@ -88,7 +91,7 @@ Một ảnh xuất hiện ở 2 post, lần đầu fail → **lần hai bị coi
 
 **Sửa:** chỉ ghi `seen_hashes` sau khi `_fetch` trả `"OK"` (qua `add_done_callback`).
 
-### C3. Timeout bị phân loại là "CANCELLED" — mất dấu hoàn toàn — 🔴 nghiêm trọng
+### ✅ C3. Timeout bị phân loại là "CANCELLED" — mất dấu hoàn toàn — 🔴 nghiêm trọng (đã sửa)
 
 `_racing_stop` hết vòng lặp thì trả `None`; `_fetch` đổi thành `"CANCELLED"`. Trong `counted()` chỉ `"FAILED"` mới tăng `failed`.
 
@@ -103,7 +106,7 @@ Máy chủ chậm 40s → file biến mất, **không log, không đếm lỗi**
 
 **Sửa:** trả `"TIMEOUT"` khi hết hạn mà cờ dừng chưa bật; đếm vào `failed`; log một dòng `[!]`.
 
-### C4. Video/file trùng tên đè nhau — 🔴 nghiêm trọng
+### ✅ C4. Video/file trùng tên đè nhau — 🔴 nghiêm trọng (đã sửa)
 
 `plan_jobs` chỉ thêm hash cho nhánh ảnh; video/file dùng `f"[{ts}]_{tag}_{i:03d}{ext}"` với `i` reset về 1 mỗi post:
 
@@ -117,7 +120,7 @@ Nguy hiểm hơn: `post_timestamp` trả `"00000000_000000"` khi thiếu `<time.
 
 **Sửa:** thêm `_{h[:6]}` vào cả nhánh video/file.
 
-### H1. `selectors.py` che module chuẩn của Python — 🟠 cao
+### ✅ H1. `selectors.py` che module chuẩn của Python — 🟠 cao (đã sửa)
 
 File nội bộ đặt tên trùng module stdlib. `downloader.py` viết `import selectors as S` → nạp file local:
 
@@ -131,7 +134,7 @@ Hiện **chưa nổ** vì Windows Python 3.10 mặc định dùng `ProactorEvent
 
 **Sửa:** đổi tên thành `xf_selectors.py`.
 
-### H2. Đổi theme giữa lúc quét → nút sai trạng thái + mất phím tắt — 🟠 cao
+### ✅ H2. Đổi theme giữa lúc quét → nút sai trạng thái + mất phím tắt — 🟠 cao (đã sửa)
 
 `toggle_theme` destroy toàn bộ widget rồi `_build_ui()` lại từ đầu, nhưng **không khôi phục state đang chạy**:
 
@@ -145,7 +148,7 @@ AFTER theme switch mid-scan:
 
 Hậu quả: bấm "Quét" lúc đang quét → **hai engine song song**, dùng chung `stop_event` và `cache`. Phím `Return` ở ô URL cũng chết vì `_bind_keys()` chỉ gọi 1 lần lúc khởi động.
 
-### H3. `_launch` không có khoá chống chạy chồng — 🟠 cao
+### ✅ H3. `_launch` không có khoá chống chạy chồng — 🟠 cao (đã sửa)
 
 `_launch` không kiểm tra `current_loop`. Và `_focused_primary` gọi thẳng `start_single_crawl_thread()` — **không đi qua** trạng thái disabled của nút:
 
@@ -184,7 +187,7 @@ crawler_cache.db  20480
 
 Khi `E:\` không ghi được (sandbox CI), chính 3 test này fail: `sqlite3.OperationalError: unable to open database file`.
 
-### M4. Fallback thư mục bị "split-brain" — 🟡 trung bình
+### ✅ M4. Fallback thư mục bị "split-brain" — 🟡 trung bình (đã sửa)
 
 `_resolve_dir` fallback sang `~/RPHANG` và đặt **cache ở đó**, nhưng `engine.py` vẫn dùng `config.DOWNLOAD_DIR` để ghi media:
 
@@ -195,7 +198,7 @@ config.DOWNLOAD_DIR = E:\HIDE\RPHANG
 
 Cache trỏ đường dẫn không tồn tại → mất tác dụng khử trùng lặp.
 
-### M5. Deadlock tiềm ẩn khi `TAB_SEM = 1` — 🟡 trung bình
+### ✅ M5. Deadlock tiềm ẩn khi `TAB_SEM = 1` — 🟡 trung bình (đã sửa)
 
 `crawl_link` giữ `tab_semaphore` rồi gọi `crawl_thread` — nơi **acquire lại cùng semaphore**:
 
