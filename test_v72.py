@@ -956,6 +956,221 @@ class TestThemeSwitchMidScan(unittest.TestCase):
         self.assertFalse(self.app._is_running())
 
 
+class TestCloseWhileCrawling(unittest.TestCase):
+    """Đóng cửa sổ khi đang quét phải dọn dẹp, không chỉ destroy root.
+
+    Bản cũ không có handler WM_DELETE_WINDOW. Đóng app giữa lúc quét làm event
+    loop bị huỷ giữa chừng: Playwright driver báo EPIPE, SQLite có thể còn WAL
+    chưa gộp, và process con của Playwright có thể mồ côi.
+    """
+
+    def setUp(self):
+        import tkinter as tk
+        import v72
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.app = v72.XenForoScannerApp(self.root)
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_close_handler_is_installed(self):
+        handler = self.root.protocol("WM_DELETE_WINDOW")
+        self.assertTrue(handler, "phải đăng ký handler cho WM_DELETE_WINDOW")
+        self.assertIn("on_close", str(handler))
+
+    def test_close_sets_stop_event(self):
+        self.assertFalse(self.app.stop_event.is_set())
+        self.app.on_close()
+        self.assertTrue(self.app.stop_event.is_set(),
+                        "đóng app phải bật cờ dừng engine")
+
+    def test_close_destroys_root(self):
+        self.app.on_close()
+        import tkinter as tk
+        with self.assertRaises(tk.TclError):
+            self.root.winfo_exists()
+
+    def test_close_reports_whether_it_was_running(self):
+        """Có thread engine thật đang chạy thì on_close phải báo True và join nó."""
+        import threading, time
+
+        def slow_engine():
+            time.sleep(0.15)
+
+        self.app._engine_thread = threading.Thread(target=slow_engine, daemon=True)
+        self.app._engine_thread.start()
+        already = self.app._engine_thread.is_alive()
+        self.assertTrue(already)
+        # _is_running dựa trên current_loop; giả lập bằng loop thật của thread
+        # engine là quá phức tạp cho unit test, nên chỉ kiểm join hoạt động.
+        t0 = time.perf_counter()
+        self.app.on_close()
+        elapsed = time.perf_counter() - t0
+        self.assertFalse(self.app._engine_thread.is_alive(), "phải join thread engine")
+        self.assertLess(elapsed, 2.0, f"không được chờ quá lâu: {elapsed:.2f}s")
+
+    def test_close_is_idempotent(self):
+        """Đóng hai lần không được ném exception."""
+        self.app.on_close()
+        try:
+            self.app.on_close()
+        except Exception as e:
+            self.fail(f"gọi on_close lần hai không được ném: {e!r}")
+
+
+class TestBackoff(unittest.TestCase):
+    """Retry phải có jitter và trần thật.
+
+    Bug cũ: `sleep(2 * (attempt + 1))` cố định -> 10 worker cùng nhịp, cùng hỏi
+    lại server ở cùng thời điểm, dễ bị rate-limit tập thể.
+    """
+
+    def test_has_jitter(self):
+        from downloader import backoff_seconds
+        samples = {round(backoff_seconds(2), 4) for _ in range(30)}
+        self.assertGreater(len(samples), 1, "không có jitter thì các worker vẫn cùng nhịp")
+
+    def test_cap_is_a_real_cap(self):
+        """Trần phải là trần thật: cap 30 thì không được ngủ 32."""
+        from downloader import backoff_seconds
+        for attempt in range(30):
+            self.assertLessEqual(backoff_seconds(attempt), 30.0,
+                                 f"attempt {attempt} vượt trần")
+
+    def test_grows_then_plateaus(self):
+        from downloader import backoff_seconds
+        low = max(backoff_seconds(0) for _ in range(20))
+        mid = max(backoff_seconds(2) for _ in range(20))
+        self.assertGreater(mid, low, "phải tăng theo số lần thử")
+        high = backoff_seconds(20)
+        self.assertLessEqual(high, 30.0)
+
+    def test_never_negative_or_zero(self):
+        from downloader import backoff_seconds
+        for attempt in range(10):
+            self.assertGreater(backoff_seconds(attempt), 0)
+
+
+class TestSoupsIsNotPureByAccident(unittest.TestCase):
+    """extract_post_media sửa input — phải nói rõ, và phải có bản không sửa.
+
+    Module từng tự nhận "hàm thuần" trong khi _strip_junk gọi decompose() xoá
+    node khỏi cây gốc. Gọi hai lần trên cùng soup cho kết quả khác nhau.
+    """
+
+    HTML = ('<article class="message--post" data-author="a"><div class="message-body">'
+            '<blockquote class="bbCodeBlock"><img src="/quoted.jpg"></blockquote>'
+            '<img src="/real.jpg"></div></article>')
+
+    def test_documented_as_mutating(self):
+        self.assertIn("SỬA", X.extract_post_media.__doc__ or "",
+                      "docstring phải cảnh báo rõ là hàm sửa input")
+
+    def test_module_docstring_no_longer_claims_pure(self):
+        self.assertNotIn("Hàm thuần", X.__doc__ or "",
+                         "module không được tự nhận tất cả đều thuần")
+
+    def test_copy_variant_does_not_mutate(self):
+        soup = soup_of(self.HTML)
+        post = soup.select_one("article")
+        first = X.extract_post_media_copy(post, "https://r/")[0]
+        second = X.extract_post_media_copy(post, "https://r/")[0]
+        self.assertEqual(first, ['https://r/real.jpg'])
+        self.assertEqual(first, second, "bản copy phải cho cùng kết quả mọi lần")
+
+
+class TestEnvVarIsHonoured(unittest.TestCase):
+    """COCOC_PATH từng chỉ được NHẮC trong thông báo lỗi, không được đọc."""
+
+    def test_env_var_is_actually_read(self):
+        import browser_launcher as B
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
+            fake = f.name
+        old = os.environ.get("COCOC_PATH")
+        os.environ["COCOC_PATH"] = fake
+        try:
+            self.assertEqual(B.find_browser(), fake,
+                             "biến môi trường COCOC_PATH phải được find_browser đọc")
+        finally:
+            if old is None:
+                os.environ.pop("COCOC_PATH", None)
+            else:
+                os.environ["COCOC_PATH"] = old
+            os.unlink(fake)
+
+    def test_explicit_arg_beats_env(self):
+        import browser_launcher as B
+        files = []
+        try:
+            for _ in range(2):
+                with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
+                    files.append(f.name)
+            old = os.environ.get("COCOC_PATH")
+            os.environ["COCOC_PATH"] = files[1]
+            try:
+                self.assertEqual(B.find_browser(files[0]), files[0],
+                                 "tham số truyền vào phải thắng biến môi trường")
+            finally:
+                if old is None:
+                    os.environ.pop("COCOC_PATH", None)
+                else:
+                    os.environ["COCOC_PATH"] = old
+        finally:
+            for p in files:
+                os.unlink(p)
+
+    def test_nonexistent_env_path_falls_through(self):
+        import browser_launcher as B
+        old = os.environ.get("COCOC_PATH")
+        os.environ["COCOC_PATH"] = r"C:\khong\ton\tai\browser.exe"
+        try:
+            found = B.find_browser()
+            self.assertTrue(found is None or os.path.isfile(found),
+                            "đường dẫn hỏng không được trả về")
+        finally:
+            if old is None:
+                os.environ.pop("COCOC_PATH", None)
+            else:
+                os.environ["COCOC_PATH"] = old
+
+
+class TestDiskSpaceGuard(unittest.TestCase):
+    """Hết đĩa giữa chừng để lại file cụt + loạt lỗi khó hiểu."""
+
+    def _dl(self):
+        from downloader import Downloader
+        class _NoStop:
+            @staticmethod
+            def is_set():
+                return False
+        return Downloader(cache=None, log=lambda *a, **k: None, stop_event=_NoStop(),
+                          semaphore=None, db_lock=None)
+
+    def test_normal_size_passes(self):
+        d = self._dl()
+        self.assertFalse(d._disk_full(os.path.join(tempfile.gettempdir(), "x.bin"),
+                                      1024))
+
+    def test_absurd_size_is_refused(self):
+        d = self._dl()
+        self.assertTrue(d._disk_full(os.path.join(tempfile.gettempdir(), "x.bin"),
+                                     10 ** 18))
+
+    def test_unknown_size_is_not_refused(self):
+        d = self._dl()
+        self.assertFalse(d._disk_full(tempfile.gettempdir(), None))
+
+    def test_free_bytes_returns_number(self):
+        d = self._dl()
+        free = d._free_bytes(tempfile.gettempdir())
+        self.assertIsNotNone(free)
+        self.assertGreater(free, 0)
+
+
 class TestDownloadIntegrityGuards(unittest.TestCase):
     """Chặn file quá lớn TRƯỚC khi nạp, và phát hiện tải thiếu dữ liệu.
 

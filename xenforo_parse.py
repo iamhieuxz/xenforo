@@ -1,4 +1,9 @@
-"""Bóc DOM XenForo. Hàm thuần: nhận soup + url trả về dữ liệu, không đụng mạng/Tk."""
+"""Bóc DOM XenForo. Không đụng mạng và không đụng Tk.
+
+Lưu ý về tính thuần: hầu hết hàm ở đây là thuần (nhận soup + url trả dữ liệu).
+Ngoại lệ có chủ đích là extract_post_media(), vì nó gỡ node rác khỏi cây soup
+bằng decompose() — xem docstring của hàm đó.
+"""
 
 import os
 import re
@@ -142,7 +147,16 @@ def post_timestamp(post):
 
 
 def extract_post_media(post, page_url):
-    """Trả về (images, videos, files) của 1 post."""
+    """Trả về (images, videos, files) của 1 post.
+
+    Hàm này SỬA (mutate) cây soup truyền vào: _strip_junk() gọi decompose() để gỡ
+    quote/quảng cáo/chữ ký, mà decompose() xoá node khỏi cây gốc. Gọi lần hai trên
+    cùng đối tượng sẽ ra kết quả khác lần đầu.
+
+    Trước đây docstring của module ghi "hàm thuần", gây hiểu nhầm. Giữ nguyên hành
+    vi mutate vì engine chỉ dùng mỗi post một lần, và gỡ node là cách rẻ nhất để
+    loại media rác. Cần bản không đụng input thì dùng extract_post_media_copy().
+    """
     _strip_junk(post)
 
     imgs, vids, files = [], [], []
@@ -206,6 +220,16 @@ def extract_post_media(post, page_url):
                 vids.append(urljoin(page_url, ifr))
 
     return S.dedupe(imgs), S.dedupe(vids), S.dedupe(files)
+
+
+def extract_post_media_copy(post, page_url):
+    """Như extract_post_media nhưng KHÔNG sửa input (làm việc trên bản sao).
+
+    Dùng khi cần gọi nhiều lần trên cùng một cây soup, hoặc khi giữ soup để bóc
+    phần khác sau đó.
+    """
+    import copy as _copy
+    return extract_post_media(_copy.copy(post), page_url)
 
 
 def thread_meta(soup):

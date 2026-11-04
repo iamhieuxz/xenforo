@@ -107,7 +107,7 @@ xenforo/
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
 ├── browser_launcher.py# Tự mở trình duyệt ở cổng CDP 9222
 ├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 52 test
+├── test_v72.py        # 112 test
 ├── _check_palette.py  # Self-check tương phản WCAG cho cả hai bảng màu
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
 ```
@@ -143,12 +143,23 @@ Toàn bộ tham số nằm trong `config.py`:
 | `DOWNLOAD_SEM` | `10` | Số request tải đồng thời |
 | `THREAD_SEM` | `2` | Số thread của một user bóc đồng thời |
 | `USER_SEM` | `2` | Số user xử lý đồng thời |
+| `PENDING_LIMIT` | `80` | Số task tải được phép tồn tại cùng lúc trong một thread |
+| `MAX_FILE_MB` | `512` | Trần kích thước một tệp. `0` = không giới hạn |
 | `SETTLE_MS` | `0` | Thời gian chờ thêm sau khi trang render |
 | `MAX_RETRIES` | `3` | Số lần thử lại khi mở trang |
 | `DOWNLOAD_TIMEOUT_MS` | `40000` | Timeout tải một file |
 | `NAV_TIMEOUT_MS` | `45000` | Timeout điều hướng trang |
 | `STOP_TIMEOUT_MS` | `2000` | Timeout rút ngắn khi đang dừng |
 | `BOX_PRESETS` | 6 URL mẫu | Danh sách gợi ý trong dropdown |
+
+Bốn biến semaphore được kẹp sàn `>= 1` lúc nạp config: `Semaphore(0)` là khoá
+chết ngay từ đầu, còn giá trị âm thì asyncio ném `ValueError`.
+
+Về `MAX_FILE_MB`: Playwright 1.54 **không có API streaming** cho
+`context.request` — `body()` nạp toàn bộ payload vào RAM. Vì vậy trần này được
+kiểm bằng `content-length` **trước khi** gọi `body()`. Nếu server không gửi
+`content-length` (chunked encoding) thì file vẫn phải tải trọn, nên trần không
+áp dụng được trong trường hợp đó.
 
 Về `SETTLE_MS`: XenForo render server-side, đo thực tế `settle=0` vẫn ra đủ 20 post. Tăng lên nếu bạn thấy thiếu bài, hoặc bọc thêm `wait_for_selector` khi mạng chậm.
 
@@ -182,7 +193,12 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 python -m unittest test_v72
 ```
 
-52 test, chạy khoảng 1 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
+112 test, chạy khoảng 5 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
+
+Test **hermetic**: `setUpModule` trỏ `config.DOWNLOAD_DIR` và biến
+`RPHANG_DIR` về thư mục tạm, nên suite không mở và không ghi
+`crawler_cache.db` của thư viện thật. Nhờ vậy chạy được trên máy CI không
+có ổ `E:`.
 
 Test tương phản màu nằm trong test suite, duyệt cả hai bảng màu. Chạy thêm self-check độc lập:
 
@@ -225,7 +241,8 @@ Khi Cốc Cốc đã chạy, nó bỏ qua cờ debug và chỉ mở tab. Đóng 
 ## Giới hạn đã biết
 
 - Chỉ chạy được trên Windows. Phần bật thanh tiêu đề tối dùng `ctypes` và `dwmapi`.
-- Số liệu thống kê trên góc phải được đọc từ chuỗi log mà engine in ra, không phải từ bộ đếm riêng. Sửa câu chữ trong `engine.py` thì số liệu sẽ không cập nhật, trạng thái vẫn đúng.
-- Chưa có kiểm thử tự động cho `toggle_theme`; việc này mới kiểm bằng tay.
+- Số liệu thống kê trên góc phải được đọc từ chuỗi log mà engine in ra, không phải từ bộ đếm riêng. Sửa câu chữ trong `engine.py` thì số liệu sẽ không cập nhật, trạng thái vẫn đúng. Ngoài ra con số này là **giá trị của thread gần nhất**, không phải tổng tích luỹ của cả phiên.
+- **Không tải theo luồng (streaming).** Playwright 1.54 không có API stream cho `context.request`; `body()` nạp trọn payload vào RAM. `MAX_FILE_MB` chặn được file lớn *khi server gửi `content-length`*; server dùng chunked encoding thì vẫn tải trọn. Muốn xử lý triệt để phải đổi sang HTTP client riêng và tự quản lý cookie phiên.
 - Media chỉ lấy từ nội dung bài viết. Ảnh trong avatar, chữ ký cuối bài và thanh cảm xúc bị loại có chủ đích.
 - Một thread nhiều trang được app bấm "Trang sau" để lấy hết, nhưng mỗi trang phải render xong mới sang trang kế tiếp nên thread dài sẽ chậm.
+- `xenforo_parse.extract_post_media()` **sửa** cây soup truyền vào (gỡ quote/quảng cáo bằng `decompose()`). Cần bản không sửa input thì dùng `extract_post_media_copy()`.

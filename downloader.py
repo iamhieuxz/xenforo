@@ -6,6 +6,7 @@ Tách khỏi GUI: chỉ cần logger (hàm) và stop_event (threading.Event).
 import asyncio
 import hashlib
 import os
+import random
 import shutil
 
 import aiofiles
@@ -25,6 +26,21 @@ class _Timeout:
 
 
 _TIMEOUT = _Timeout()
+
+
+def backoff_seconds(attempt, base=2.0, cap=30.0):
+    """Thời gian chờ trước lần thử lại, có jitter.
+
+    Bản cũ dùng `2 * (attempt + 1)` cố định: 10 worker cùng nhịp, cùng hỏi lại
+    server ở cùng một thời điểm -> dễ bị rate-limit tập thể và tạo "bầy" request.
+    Jitter tách các lần thử ra.
+
+    Jitter cộng SAU nhưng tổng vẫn bị chặn bởi `cap`: trần phải là trần thật,
+    nếu không thì "cap 30" vẫn có thể ngủ 32s và người dùng thấy app treo.
+    """
+    base_delay = base * (2 ** attempt)
+    delay = min(cap, base_delay + random.uniform(0, base))
+    return min(cap, delay)
 
 
 def url_hash(url):
@@ -253,6 +269,11 @@ class Downloader:
                         if too_big:
                             return "FAILED"
 
+                        # Hết đĩa giữa chừng để lại file cụt + loạt lỗi khó hiểu.
+                        declared_now = self._content_length(response)
+                        if self._disk_full(save_path, declared_now):
+                            return "FAILED"
+
                         body = await response.body()
                         if not body:
                             return "FAILED"
@@ -276,7 +297,7 @@ class Downloader:
                     if self.stop_event.is_set():
                         return "CANCELLED"
                     if response.status in S.RETRY_STATUSES or response.status >= 500:
-                        await asyncio.sleep(2 * (attempt + 1))
+                        await asyncio.sleep(backoff_seconds(attempt))
                     else:
                         # 4xx khác 429 là lỗi vĩnh viễn -> retry chỉ tốn thời gian.
                         return "FAILED"
@@ -296,7 +317,7 @@ class Downloader:
                     if self.stop_event.is_set():
                         return "CANCELLED"
                     if attempt < config.MAX_RETRIES - 1:
-                        await asyncio.sleep(1 + attempt)
+                        await asyncio.sleep(backoff_seconds(attempt, base=1.0))
                 finally:
                     # Không dispose -> rò connection pool, vài trăm file là pool cạn.
                     if response is not None:
@@ -328,6 +349,39 @@ class Downloader:
         if declared is not None and declared > limit:
             self.log(f"   [!] Bỏ qua tệp > {config.MAX_FILE_MB}MB "
                      f"({declared // (1024*1024)}MB): {url[:60]}")
+            return True
+        return False
+
+    @staticmethod
+    def _free_bytes(path):
+        """Dung lượng trống của ổ chứa `path`, hoặc None nếu không xác định được."""
+        try:
+            import shutil as _sh
+            probe = path
+            while probe and not os.path.exists(probe):
+                parent = os.path.dirname(probe)
+                if parent == probe:
+                    break
+                probe = parent
+            return _sh.disk_usage(probe).free
+        except OSError:
+            return None
+
+    def _disk_full(self, save_path, needed):
+        """True nếu ổ không đủ chỗ cho `needed` byte (cộng biên an toàn).
+
+        Ghi dở rồi hết đĩa sẽ để lại file cụt và một loạt lỗi khó hiểu. Biết trước
+        thì dừng gọn và báo rõ. Chỉ kiểm được khi server gửi content-length.
+        """
+        if not needed:
+            return False
+        free = self._free_bytes(os.path.dirname(save_path) or ".")
+        if free is None:
+            return False
+        reserve = 50 * 1024 * 1024          # chừa 50MB cho DB, log, file tạm
+        if needed + reserve > free:
+            self.log(f"   [!] Hết dung lượng: cần {needed // (1024*1024)}MB, "
+                     f"còn {free // (1024*1024)}MB. Dừng tải.")
             return True
         return False
 

@@ -42,8 +42,15 @@ EXE_CANDIDATES = tuple(p for p in _BROWSER_CANDIDATES if p)
 
 
 def find_browser(explicit=None):
-    """Đường dẫn exe trình duyệt, hoặc None."""
-    for path in ([explicit] if explicit else []) + list(EXE_CANDIDATES):
+    """Đường dẫn exe trình duyệt, hoặc None.
+
+    Thứ tự: tham số truyền vào -> biến môi trường -> danh sách mặc định.
+    COCOC_PATH trước đây chỉ được NHẮC trong thông báo lỗi mà không hề được đọc,
+    nên ai làm theo hướng dẫn đều không có tác dụng.
+    """
+    env_path = os.environ.get("COCOC_PATH") or os.environ.get("V72_BROWSER_PATH")
+    for path in ([explicit] if explicit else []) + ([env_path] if env_path else []) \
+            + list(EXE_CANDIDATES):
         if path and os.path.isfile(path):
             return path
     return None

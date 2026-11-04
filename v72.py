@@ -139,6 +139,7 @@ class XenForoScannerApp:
         self.download_dir = config.DOWNLOAD_DIR
         self.current_loop = None
         self.engine = None
+        self._engine_thread = None  # để on_close join được
         self._had_error = False    # run_async_engine set khi engine log lỗi
         self._last_detail = ""     # dòng phụ dưới trạng thái, ví dụ "12 ảnh, 3 lỗi"
         self._n_image = 0
@@ -149,6 +150,12 @@ class XenForoScannerApp:
         self.cache = MediaCache(os.path.join(self.download_dir, "crawler_cache.db"))
         self.local_users = LocalUserIndex(self.cache.conn)
         self._scan_local_users()
+
+        # Đóng cửa sổ phải dọn dẹp: đang quét mà tắt app thì loop, driver Playwright
+        # và handle SQLite đều còn treo -> event loop bị huỷ giữa chừng, Playwright
+        # báo EPIPE, DB có thể còn WAL chưa gộp. Không có handler thì Tk chỉ đóng
+        # cửa sổ rồi thoát, không ai dọn.
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self._build_ui()
 
@@ -683,6 +690,66 @@ class XenForoScannerApp:
         if self.engine:
             self.engine.emergency_cleanup()
 
+    def on_close(self):
+        """Dọn dẹp trước khi thoát: dừng engine, đóng loop, đóng DB.
+
+        Thứ tự quan trọng: bật cờ dừng TRƯỚC, để engine không kịp tạo thêm task;
+        rồi mới đóng DB sau khi loop dừng, nếu không sẽ có ghi vào connection đã
+        đóng.
+
+        Không có handler này (bản cũ), đóng cửa sổ giữa lúc quét làm event loop bị
+        huỷ giữa chừng: Playwright báo EPIPE, DB có thể còn WAL chưa gộp.
+        """
+        was_running = self._is_running()
+        try:
+            self.stop_event.set()
+        except Exception:
+            pass
+        loop = self.current_loop
+        if loop and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._async_emergency_cleanup)
+            except RuntimeError:
+                pass
+
+        # Join LUÔN, không nằm trong nhánh kiểm tra `loop`: thread engine là thứ
+        # thật sự ghi vào DB và đóng Playwright. Chỉ chờ current_loop thành None
+        # là chờ một biến do chính thread kia đặt — không đảm bảo thread đã thoát.
+        # Có giới hạn thời gian để không treo cửa sổ khi engine kẹt trong request.
+        import time
+        deadline = time.time() + 3.0
+        thread = self._engine_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, deadline - time.time()))
+        while self._is_running() and time.time() < deadline:
+            time.sleep(0.02)
+
+        loop = self.current_loop
+        if loop and not loop.is_closed():
+            try:
+                loop.close()
+            except Exception:
+                pass
+        self.current_loop = None
+        try:
+            self.cache.close()
+        except Exception:
+            pass
+        # Xả callback after(0) còn treo TRƯỚC khi destroy root: `log()` luôn đi qua
+        # root.after(0, ...), nên engine ghi dòng cuối ngay trước khi thoát sẽ để
+        # lại callback trỏ tới widget đã chết -> Tcl báo "invalid command name
+        # ..._safe_log" và "application has been destroyed".
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        return was_running
+
     def _launch(self, coro_factory):
         """Bắt đầu một phiên quét. Trả True nếu thực sự khởi động.
 
@@ -702,7 +769,9 @@ class XenForoScannerApp:
         self._n_image = self._n_video = self._n_error = 0
         self.change_buttons_state(running=True)
         self.set_status("ĐANG QUÉT", self.ACCENT)
-        threading.Thread(target=self.run_async_engine, args=(coro_factory,), daemon=True).start()
+        self._engine_thread = threading.Thread(
+            target=self.run_async_engine, args=(coro_factory,), daemon=True)
+        self._engine_thread.start()
         return True
 
     # ---------- điểm vào từ UI ----------

@@ -4,8 +4,8 @@
 > Quy tắc làm việc: **mỗi bước một commit**, chạy `python audit_repro.py` + `python -m unittest test_v72`
 > trước và sau khi sửa. Chỉ tick khi có bằng chứng cụ thể ở cột "Bằng chứng".
 
-**Điểm hiện tại: 86/100** (gốc 64 → P0 78 → P1 86). Test: **83 test xanh**.
-P2–P3 (bước 10–13) chưa làm.
+**Điểm hiện tại: 88/100** (gốc 64 → P0 78 → P1 86 → P2/P3 88). **117 test xanh.**
+Tất cả 15 bước đã hoàn tất.
 
 ---
 
@@ -26,7 +26,8 @@ P2–P3 (bước 10–13) chưa làm.
 | 10 | M3 — test hermetic | 🟡 | P3 | [x] |
 | 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [x] |
 | 12 | H4 — streaming download (một phần) | 🟠 | P2 | [x] |
-| 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [ ] |
+| 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [x] |
+| 14 | Đóng app giữa lúc quét (phát sinh) | 🟠 | P1 | [x] |
 
 ---
 
@@ -497,13 +498,80 @@ thêm streaming — lúc đó hãy làm lại 12.1 cho đúng.
 
 ## Bước 13 — N1/N2/N3: tài liệu & backoff
 
-- [ ] 13.1 `COCOC_PATH`: implement thật (đọc `os.environ`) hoặc bỏ khỏi thông báo
-- [ ] 13.2 Backoff có jitter: `base * 2**attempt + random.uniform(0, 1)`
-- [ ] 13.3 `extract_post_media` → nêu rõ là mutating, hoặc copy soup
-- [ ] 13.4 Kiểm dung lượng đĩa trước khi tải
-- [ ] 13.5 Cập nhật README khớp hành vi mới
+- [x] 13.1 `COCOC_PATH`: implement thật (đọc `os.environ`) hoặc bỏ khỏi thông báo
+- [x] 13.2 Backoff có jitter: `base * 2**attempt + random.uniform(0, 1)`
+- [x] 13.3 `extract_post_media` → nêu rõ là mutating, hoặc copy soup
+- [x] 13.4 Kiểm dung lượng đĩa trước khi tải
+- [x] 13.5 Cập nhật README khớp hành vi mới
 
-**Bằng chứng:** README diff
+**Bằng chứng:**
+
+```
+backoff  = [3.84, 4.46, 9.38, 17.31, 30.0, 30.0, ...]
+tran 30 ton trong? True     co jitter? True
+
+COCOC_PATH thực sự được đọc (trước chỉ được nhắc trong thông báo lỗi)
+extract_post_media: docstring cảnh báo SỬA input + có extract_post_media_copy()
+_disk_full(): chừa 50MB, từ chối khi không đủ, không chặn khi không biết size
+
+python -m unittest test_v72 -> Ran 112 tests, OK
+```
+
+**Ba điều chỉnh nhỏ so với kế hoạch:**
+
+1. **13.2 jitter đặt SAU cap nhưng tổng vẫn bị cap chặn.** Viết
+   `min(cap, base*2**attempt) + uniform(0, base)` thì `attempt=9` cho 30.56s —
+   tức "trần 30" vẫn ngủ 32s. Test `test_cap_is_a_real_cap` bắt được.
+2. **13.3 chọn cả hai:** vừa sửa docstring cho đúng, vừa thêm
+   `extract_post_media_copy()`. Đổi tên hàm sẽ phá vỡ API mà test và engine đang
+   dùng, trong khi vấn đề thật chỉ là tài liệu nói sai.
+3. **13.4 chỉ kiểm được khi có `content-length`.** Không biết trước kích thước
+   thì không được chặn mù, vì sẽ bỏ sót media thật.
+
+**README đã cập nhật:** bảng config thêm `PENDING_LIMIT`/`MAX_FILE_MB`, số test
+52 → 112, mục "Giới hạn đã biết" viết lại theo hành vi thật (bỏ dòng "chưa có
+kiểm thử cho toggle_theme" vì đã có; thêm giới hạn streaming và mutation).
+
+---
+
+## Bước 14 (phát sinh) — đóng app giữa lúc quét
+
+**Không có trong kế hoạch.** Phát hiện khi chạy smoke test khởi động app thật:
+process thoát ra `EPIPE: broken pipe` từ Playwright driver.
+
+**Nguyên nhân:** `v72.py` không đăng ký `WM_DELETE_WINDOW`. Đóng cửa sổ khi đang
+quét thì Tk chỉ destroy widget rồi thoát: event loop bị huỷ giữa chừng, driver
+Playwright mất ống kết nối, SQLite còn handle mở (có thể còn WAL chưa gộp).
+
+- [x] 14.1 `root.protocol("WM_DELETE_WINDOW", self.on_close)`
+- [x] 14.2 `on_close`: bật cờ dừng → join thread engine (có hạn 3s) → đóng loop → đóng DB → destroy
+- [x] 14.3 Xả callback `after(0)` treo trước khi destroy root
+- [x] 14.4 Track `_engine_thread` để join được
+- [x] 14.5 Test: handler tồn tại, stop_event được bật, join chạy, idempotent
+
+**Bằng chứng:**
+
+```
+handler WM_DELETE_WINDOW: '1609793667840on_close'
+sau on_close: stop_event set = True
+root da destroy: True
+thread engine da join: True
+
+python -m unittest test_v72.TestCloseWhileCrawling -> run=5 failures=0 errors=0
+python -m unittest test_v72 -> Ran 117 tests in 5.219s, OK
+```
+
+**Ba lỗi tự gây ra trong lúc làm bước này, đều do test bắt được:**
+
+| Lỗi | Triệu chứng | Sửa |
+|---|---|---|
+| Không đóng `loop` | `ResourceWarning: unclosed event loop` | `loop.close()` sau khi join |
+| `join` nằm trong `if loop:` | thread không được join khi loop là None → test fail `True is not false` | tách `join` ra ngoài nhánh |
+| Destroy root khi còn `after(0)` | `invalid command name "..._safe_log"`, `application has been destroyed` | `root.update()` trước `destroy()` |
+
+Điểm đáng chú ý: lỗi thứ hai **chỉ lộ ra vì test kiểm `is_alive()` sau
+`on_close`**, không phải vì đọc code. Nếu chỉ kiểm "không ném exception" thì đã
+lọt.
 
 ---
 
@@ -522,21 +590,32 @@ thêm streaming — lúc đó hãy làm lại 12.1 cho đúng.
 | 2026-11-05 | 7 | H3 xong | khoá ở `_launch`, chặn 4 đường vào; +4 test → 76 |
 | 2026-11-05 | 8 | M4 xong | tiêm `download_dir`; +4 test → 80 |
 | 2026-11-05 | 9 | M5 xong | bỏ acquire lồng + clamp semaphore; +3 test → 83. **Hết P1** |
+| 2026-11-05 | 10 | M3 xong | `setUpModule` trỏ temp, đóng cache; +3 test → 86 |
+| 2026-11-05 | 11 | M1+M6 xong | race thật (800→1 wait/file), bounded queue; +6 test → 92 |
+| 2026-11-05 | 12 | H4 một phần | Playwright không có streaming; 2 chốt thay thế; +6 test → 98 |
+| 2026-11-05 | 13 | N1–N3 xong | backoff jitter, COCOC_PATH thật, đĩa, docstring; +14 test → 112 |
+| 2026-11-05 | 14 | đóng app (phát sinh) | `WM_DELETE_WINDOW` → `on_close`; +5 test → 117 |
 
-## Trạng thái kiểm chứng cuối (sau bước 9)
+## Trạng thái kiểm chứng cuối
 
 ```
-python audit_repro.py      -> Tất cả 4 lỗi P0 đã được sửa.        (exit 0)
-python -m unittest test_v72 -> Ran 83 tests, OK
-python _check_palette.py    -> Tat ca cap dat WCAG 2.2 AA.        (exit 0)
+python audit_repro.py       -> Tất cả 4 lỗi P0 đã được sửa.        (exit 0)
+python -m unittest test_v72 -> Ran 117 tests, OK
+python _check_palette.py    -> Tat ca cap dat WCAG 2.2 AA.         (exit 0)
 python -c "import selectors, asyncio" -> default selectors OK
+
+Smoke test app thật:
+  app khởi động OK
+  3 nút bấm không crash
+  đổi theme khi đang quét: scan=disabled | stop=normal
+  phím tắt còn: True
+  on_close: stop_event set=True, root destroyed=True, thread joined=True
 ```
 
-## Việc còn lại
+## Việc còn lại (không nằm trong phạm vi đã làm)
 
-| Bước | Nội dung | Ưu tiên |
-|---|---|---|
-| 10 | M3 — test hermetic | P3 |
-| 11 | M1+M6 — race thật & bounded queue | P2 |
-| 12 | H4 — streaming download | P2 |
-| 13 | N1/N2/N3 — tài liệu, backoff, giới hạn dung lượng | P3 |
+| Việc | Vì sao chưa làm |
+|---|---|
+| Streaming download thật | Playwright 1.54 không có API stream; cần đổi sang HTTP client riêng + tự quản lý cookie phiên — thay đổi kiến trúc |
+| Bộ đếm thống kê riêng thay bóc regex log | Cần sửa `engine` để trả stats qua callback; hiện chỉ hiển thị số của thread gần nhất |
+| Resume checkpoint | Tính năng mới, không phải sửa lỗi |

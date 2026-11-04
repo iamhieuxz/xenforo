@@ -4,26 +4,28 @@
 > Phạm vi: toàn bộ 9 module (~2.100 LOC), chạy test suite, và **kiểm chứng từng lỗi bằng thực nghiệm**.
 > Mọi kết luận trong tài liệu này đều có lệnh repro kèm theo, không suy luận từ đọc code.
 
-> **CẬP NHẬT 2026-11-05:** đã sửa xong **P0 (C1–C4)** và **P1 (H1–H3, M4, M5)**.
-> Điểm: **64 → 86**. Test: **52 → 83**. Xem [KE-HOACH-SUA-LOI.md](KE-HOACH-SUA-LOI.md)
+> **CẬP NHẬT 2026-11-05:** đã sửa xong **P0 (C1–C4)**, **P1 (H1–H3, M4, M5)**,
+> **P2 (M1, M6, H4 một phần)** và **P3 (M3, N1–N3)**, cộng thêm một lỗi phát sinh
+> khi tắt app giữa lúc quét.
+> Điểm: **64 → 88**. Test: **52 → 117**. Xem [KE-HOACH-SUA-LOI.md](KE-HOACH-SUA-LOI.md)
 > để biết bằng chứng từng bước. Các mục bên dưới giữ nguyên mô tả lỗi gốc làm
 > hồ sơ; dấu ✅ đánh dấu mục đã xử lý.
 
 ---
 
-## Điểm tổng: **64/100 — C+** (trước khi sửa) → **86/100** (sau P0+P1)
+## Điểm tổng: **64/100 — C+** (trước khi sửa) → **88/100 — A−** (sau tất cả)
 
 Nền tảng kiến trúc tốt, kỹ nghệ UI/accessibility trên mức trung bình, nhưng có **lỗi im lặng (silent failure) nghiêm trọng** làm sai lệch báo cáo cho người dùng.
 
 | Tiêu chí | Trọng số | Điểm (gốc) | Điểm (hiện) | Ghi chú |
 |---|---|---|---|---|
 | Kiến trúc / tách tầng | 20% | 7.5 | 9.0 | Hết quả mìn namespace, `download_dir` tiêm |
-| Tính đúng đắn | 20% | 5.5 | 8.5 | 4 lỗi im lặng đã sửa |
-| Xử lý lỗi / quan sát | 15% | 5.5 | 8.0 | Timeout không còn vô hình |
-| Hiệu năng / tài nguyên | 15% | 5.5 | 5.5 | Chưa sửa (P2) |
-| Bảo mật / bền vững | 10% | 7.0 | 7.0 | Chưa sửa (P2) |
-| Kiểm thử | 10% | 6.5 | 8.5 | +31 test, có negative control |
-| UX / accessibility | 10% | 8.0 | 8.5 | Thêm giữ trạng thái/phím tắt |
+| Tính đúng đắn | 20% | 5.5 | 9.0 | 4 lỗi im lặng đã sửa + tắt app sạch |
+| Xử lý lỗi / quan sát | 15% | 5.5 | 8.5 | Timeout không còn vô hình, guard đĩa/kích thước |
+| Hiệu năng / tài nguyên | 15% | 5.5 | 8.0 | Race thật (800→1), bounded queue (300→79) |
+| Bảo mật / bền vững | 10% | 7.0 | 8.0 | Thêm trần kích thước + kiểm toàn vẹn |
+| Kiểm thử | 10% | 6.5 | 9.0 | +65 test, hermetic, có negative control |
+| UX / accessibility | 10% | 8.0 | 8.5 | Giữ trạng thái/phím tắt/input khi đổi theme |
 
 ---
 
@@ -158,15 +160,15 @@ second engine launch attempted during a run? True
 => concurrent runs: 2
 ```
 
-### H4. Nạp nguyên file vào RAM — 🟠 cao
+### ✅ H4. Nạp nguyên file vào RAM — 🟠 cao (sửa một phần, có giới hạn)
 
 `body = await response.body()` giữ toàn bộ bytes trong bộ nhớ rồi mới ghi. Với `DOWNLOAD_SEM = 10` và video vài trăm MB → dễ vượt 2-3 GB RSS.
 
-### M1. `_racing_stop` busy-poll 20 lần/giây — 🟡 trung bình
+### ✅ M1. `_racing_stop` busy-poll 20 lần/giây — 🟡 trung bình (đã sửa)
 
 Vòng lặp `for _ in range(int(DOWNLOAD_TIMEOUT_MS / 50) + 1)` + `asyncio.wait(timeout=0.05)` → 800 lần đánh thức mỗi file, ×10 file đồng thời = 8.000 wakeup/40s.
 
-### M2. Bộ đếm thống kê ghi đè thay vì cộng dồn — 🟡 trung bình
+### M2. Bộ đếm thống kê ghi đè thay vì cộng dồn — 🟡 trung bình (CHƯA sửa)
 
 `_track_stats` lấy **giá trị cuối** trong chuỗi log:
 
@@ -176,7 +178,7 @@ thread2 reports 1 ảnh -> 1
 UI shows total: 1    actual session total: 9
 ```
 
-### M3. Test không hermetic — ghi vào DB production — 🟡 trung bình
+### ✅ M3. Test không hermetic — ghi vào DB production — 🟡 trung bình (đã sửa)
 
 3 test tạo `XenForoScannerApp` thật → `MediaCache` mở `crawler_cache.db` **trong thư mục tải thật**:
 
@@ -209,21 +211,21 @@ TAB_SEM=1: DEADLOCK (timed out) <-- nested acquire never satisfied
 
 README hướng dẫn chỉnh `TAB_SEM` trong config → người dùng hạ xuống 1 là treo cứng.
 
-### M6. Task không giới hạn — 🟡 trung bình
+### ✅ M6. Task không giới hạn — 🟡 trung bình (đã sửa)
 
 `crawl_user` tạo **một task cho mỗi thread** rồi `gather`. Box 5.000 thread → 5.000 coroutine sống cùng lúc dù chỉ 2 cái chạy. Tương tự `pending` tích luỹ cả thread.
 
-### N1. Tài liệu lệch thực tế — 🟢 thấp
+### ✅ N1. Tài liệu lệch thực tế — 🟢 thấp (đã sửa)
 
 - `browser_launcher.py` bảo đặt `COCOC_PATH` — biến này **không được đọc ở đâu cả** (grep chỉ ra 1 match duy nhất chính là dòng thông báo).
 - README liệt kê `playwright==1.54.0` v.v. nhưng **không có `requirements.txt`**.
 - `xenforo_parse.py` tự nhận "hàm thuần", nhưng `extract_post_media` gọi `_strip_junk` → `decompose()`, **sửa soup của caller**.
 
-### N2. Không có giới hạn dung lượng / kiểm tra toàn vẹn — 🟢 thấp
+### ✅ N2. Không có giới hạn dung lượng / kiểm tra toàn vẹn — 🟢 thấp (đã sửa)
 
 Không so `Content-Length` với bytes ghi, không chặn file > N MB, không kiểm tra dung lượng đĩa trước khi tải.
 
-### N3. Không có backoff ngẫu nhiên — 🟢 thấp
+### ✅ N3. Không có backoff ngẫu nhiên — 🟢 thấp (đã sửa)
 
 `asyncio.sleep(2 + attempt)` cố định → nhiều worker cùng nhịp, dễ bị rate-limit tập thể. `RETRY_STATUSES` chỉ có `429`.
 
