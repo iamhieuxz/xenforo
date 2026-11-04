@@ -628,6 +628,42 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestVideoNameCollision(unittest.TestCase):
+    """Video/file phải có hash trong tên, nếu không hai post cùng timestamp đè nhau.
+
+    Bug cũ: nhánh video/file dùng f"[{ts}]_{tag}_{i:03d}{ext}" với `i` reset về 1
+    ở mỗi post. Hai post khác nhau trong cùng thread -> cùng tên -> ghi đè, mất
+    media. Tệ hơn khi post thiếu <time.u-dt>: mọi post dùng "00000000_000000".
+    """
+
+    def _paths(self, urls, ts, tag):
+        return [p for _, p, _, _ in plan_jobs(urls, r"C:\f", ts, tag)]
+
+    def test_different_videos_same_timestamp_do_not_collide(self):
+        a = self._paths(["http://x/vid/A.mp4"], "20240101_120000", "comment_video")[0]
+        b = self._paths(["http://x/vid/B.mp4"], "20240101_120000", "comment_video")[0]
+        self.assertNotEqual(a, b, f"hai video khác nhau không được trùng path: {a}")
+
+    def test_missing_timestamp_does_not_cause_mass_collision(self):
+        """Mọi post thiếu <time.u-dt> đều dùng "00000000_000000" -> phải vẫn khác path."""
+        a = self._paths(["http://x/vid/A.mp4"], "00000000_000000", "main_video")[0]
+        b = self._paths(["http://x/vid/B.mp4"], "00000000_000000", "main_video")[0]
+        self.assertNotEqual(a, b, "post thiếu timestamp không được đè lên nhau")
+
+    def test_files_typed_as_files_and_unique(self):
+        paths = self._paths(["http://x/a/doc.zip", "http://x/b/doc.zip"],
+                            "20240101_120000", "comment_file")
+        self.assertEqual(len(set(paths)), len(paths), f"file trùng tên: {paths}")
+        for p in paths:
+            self.assertTrue(p.endswith(".zip"), f"phải giữ đuôi .zip: {p}")
+
+    def test_same_video_twice_is_idempotent(self):
+        """Cùng một URL phải ra cùng path — nếu khác sẽ tải trùng thay vì clone."""
+        a = self._paths(["http://x/v.mp4"], "t", "comment_video")[0]
+        b = self._paths(["http://x/v.mp4"], "t", "comment_video")[0]
+        self.assertEqual(a, b, "cùng URL phải cùng path để clone_cached dùng được")
+
+
 class TestTimeoutIsNotSilence(unittest.TestCase):
     """Hết thời gian chờ phải hiện trong thống kê, không được nuốt im lặng.
 

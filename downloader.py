@@ -68,7 +68,10 @@ def plan_jobs(urls, folder, ts, tag, seq_start=1):
             ext = ext_for(url,
                           S.VIDEO_EXT if kind == 'video' else S.FILE_EXT,
                           '.mp4' if kind == 'video' else '.bin')
-            filename = f"[{ts}]_{tag}_{i:03d}{ext}"
+            # h[:6] là BẮT BUỘC: `i` reset về 1 ở mỗi post, nên hai post cùng
+            # timestamp (hoặc cùng fallback "00000000_000000" khi thiếu thẻ
+            # <time.u-dt>) sinh ra cùng tên và đè nhau -> mất media.
+            filename = f"[{ts}]_{tag}_{i:03d}_{h[:6]}{ext}"
         jobs.append((url, os.path.join(folder, filename), h, kind))
     return jobs
 

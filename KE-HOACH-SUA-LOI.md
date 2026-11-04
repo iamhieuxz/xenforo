@@ -16,7 +16,7 @@
 | 1 | C1 — `nonlocal ok` | 🔴 | P0 | [x] |
 | 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [x] |
 | 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [x] |
-| 4 | C4 — trùng tên video/file | 🔴 | P0 | [ ] |
+| 4 | C4 — trùng tên video/file | 🔴 | P0 | [x] |
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [ ] |
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [ ] |
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [ ] |
@@ -141,11 +141,31 @@ Ba trạng thái cần phân biệt là "có response", "bị người dùng d�
 
 **File:** `downloader.py` (`plan_jobs`)
 
-- [ ] 4.1 Thêm `_{h[:6]}` vào nhánh video/file
-- [ ] 4.2 Test: 2 post cùng timestamp, video khác nhau → path khác nhau
-- [ ] 4.3 Test: `post_timestamp` fallback `00000000_000000` vẫn không đè
+- [x] 4.1 Thêm `_{h[:6]}` vào nhánh video/file
+- [x] 4.2 Test: 2 post cùng timestamp, video khác nhau → path khác nhau
+- [x] 4.3 Test: `post_timestamp` fallback `00000000_000000` vẫn không đè
 
-**Bằng chứng:** `audit_repro.py` → `c4 ... OK`
+**Bằng chứng:**
+
+```
+python audit_repro.py -> 4/4 OK, exit=0  ("Tất cả 4 lỗi P0 đã được sửa")
+python -m unittest test_v72.TestVideoNameCollision -> Ran 4 tests, OK
+python -m unittest test_v72 -> Ran 63 tests, OK
+```
+
+Test thứ tư kiểm chiều ngược lại: **cùng** một URL phải ra **cùng** path, nếu
+không `clone_cached` sẽ không trúng và app tải trùng thay vì tái sử dụng file.
+
+### Kết quả P0
+
+| Lỗi | Trước | Sau |
+|---|---|---|
+| C1 banner báo sai | `_banner(True)` khi mọi user lỗi | `_banner(False)` |
+| C2 media mất im lặng | lần 2 tạo 0 task | tạo 1 task, tải lại |
+| C3 timeout vô hình | `failed=0`, không log | `failed=1` + log `[!]` |
+| C4 đè tên file | trùng path `True` | trùng path `False` |
+
+Điểm ước tính: **64 → 78**.
 
 ---
 
