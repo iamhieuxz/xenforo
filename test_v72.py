@@ -4,9 +4,15 @@ Chạy: python test_v72.py
 
 Các test gọi thẳng xenforo_parse/cache/downloader nên không cần import Tk,
 không cần Chrome, không cần mạng.
+
+HERMETIC: setUpModule trỏ config.DOWNLOAD_DIR vào thư mục tạm trước khi bất kỳ
+test nào chạy. Bản cũ để nguyên E:\\HIDE\\RPHANG, nên ba test dựng
+XenForoScannerApp thật đã mở và GHI crawler_cache.db của thư viện thật — vừa
+làm bẩn dữ liệu người dùng, vừa làm suite đỏ trên máy không có ổ đó (CI).
 """
 
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -19,6 +25,42 @@ import browser_launcher as B
 from cache import MediaCache, LocalUserIndex
 from downloader import plan_jobs, url_hash, Downloader, count_files
 from v72 import PALETTE, log_tag, _MARKER_TAGS
+
+
+_ORIGINAL_DOWNLOAD_DIR = config.DOWNLOAD_DIR
+_TEST_TMP = None
+
+
+def setUpModule():
+    """Cô lập hoàn toàn khỏi thư mục tải thật.
+
+    Phải chạy trước MỌI test: XenForoScannerApp đọc config.DOWNLOAD_DIR trong
+    __init__ rồi mở MediaCache ngay, nên chỉ cần một test dựng app trước khi
+    kịp đổi là DB thật bị mở.
+    """
+    global _TEST_TMP
+    _TEST_TMP = tempfile.mkdtemp(prefix="v72_test_")
+    config.DOWNLOAD_DIR = _TEST_TMP
+    os.environ["RPHANG_DIR"] = _TEST_TMP
+
+
+def tearDownModule():
+    config.DOWNLOAD_DIR = _ORIGINAL_DOWNLOAD_DIR
+    os.environ.pop("RPHANG_DIR", None)
+    if _TEST_TMP:
+        # Windows khoá file đang mở: nếu còn MediaCache chưa close thì rmtree
+        # thất bại IM LẶNG (ignore_errors) và thư mục tạm ở lại mãi. Thử vài lần
+        # rồi mới bỏ cuộc, và báo ra ngoài thay vì nuốt.
+        for _ in range(3):
+            shutil.rmtree(_TEST_TMP, ignore_errors=True)
+            if not os.path.exists(_TEST_TMP):
+                break
+            import gc
+            gc.collect()
+            import time
+            time.sleep(0.05)
+        if os.path.exists(_TEST_TMP):
+            shutil.rmtree(_TEST_TMP, ignore_errors=True)
 
 
 def soup_of(html):
@@ -277,6 +319,7 @@ class TestLogColors(unittest.TestCase):
                                              str(t)),
                                   f"còn emoji trong nhãn: {t!r}")
         finally:
+            app.cache.close()      # nhả handle SQLite trước khi destroy
             root.destroy()
 
     def test_marker_mid_line_is_not_mistaken_for_a_tag(self):
@@ -436,6 +479,7 @@ class TestDownloadProgress(unittest.TestCase):
             self.assertEqual(app._last_detail, "12 ảnh, 2 video · 3 lỗi")
             self.assertTrue(app._had_error, "dòng [!] phải bật cờ có lỗi")
         finally:
+            app.cache.close()
             root.destroy()
 
     def test_log_filter_hides_and_restores(self):
@@ -463,6 +507,7 @@ class TestDownloadProgress(unittest.TestCase):
             self.assertEqual(app.log_box.index("end-1c"), all_lines,
                              "bỏ lọc phải hiện lại đủ số dòng ban đầu")
         finally:
+            app.cache.close()
             root.destroy()
 
     def test_stop_cuts_off_hung_download(self):
@@ -909,6 +954,47 @@ class TestThemeSwitchMidScan(unittest.TestCase):
         self.assertFalse(self.app._is_running(), "loop đã đóng thì phải coi là không chạy")
         self.app.current_loop = None
         self.assertFalse(self.app._is_running())
+
+
+class TestSuiteIsHermetic(unittest.TestCase):
+    """Test không được đụng vào thư mục tải thật.
+
+    Bug cũ: ba test dựng XenForoScannerApp thật, mà app mở MediaCache ngay trong
+    __init__ với config.DOWNLOAD_DIR -> mở và GHI crawler_cache.db của thư viện
+    thật. Hệ quả kép: (1) làm bẩn dữ liệu người dùng, (2) suite đỏ trên máy
+    không có ổ cấu hình (CI), vì sqlite không tạo được file.
+    """
+
+    def test_download_dir_points_into_temp(self):
+        tmp_root = os.path.normpath(tempfile.gettempdir())
+        actual = os.path.normpath(config.DOWNLOAD_DIR)
+        self.assertTrue(actual.startswith(tmp_root),
+                        f"test phải chạy trong temp, đang là {actual}")
+
+    def test_not_the_original_production_dir(self):
+        self.assertNotEqual(os.path.normpath(config.DOWNLOAD_DIR),
+                            os.path.normpath(_ORIGINAL_DOWNLOAD_DIR),
+                            "config.DOWNLOAD_DIR phải đã được đổi khỏi giá trị thật")
+
+    def test_app_creates_cache_inside_temp_only(self):
+        """Dựng app thật rồi kiểm DB nằm trong temp, không phải ổ thật."""
+        import tkinter as tk
+        import v72
+        tmp_root = os.path.normpath(tempfile.gettempdir())
+        root = tk.Tk()
+        root.withdraw()
+        app = None
+        try:
+            app = v72.XenForoScannerApp(root)
+            db_path = os.path.join(app.download_dir, "crawler_cache.db")
+            self.assertTrue(os.path.normpath(app.download_dir).startswith(tmp_root),
+                            f"app đang dùng {app.download_dir}, phải nằm trong temp")
+            self.assertTrue(os.path.exists(db_path),
+                            "app phải tạo DB trong thư mục tạm của test")
+        finally:
+            if app is not None:
+                app.cache.close()
+            root.destroy()
 
 
 class TestNoStdlibShadowing(unittest.TestCase):

@@ -23,7 +23,7 @@ P2–P3 (bước 10–13) chưa làm.
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [x] |
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [x] |
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [x] |
-| 10 | M3 — test hermetic | 🟡 | P3 | [ ] |
+| 10 | M3 — test hermetic | 🟡 | P3 | [x] |
 | 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [ ] |
 | 12 | H4 — streaming download | 🟠 | P2 | [ ] |
 | 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [ ] |
@@ -348,12 +348,44 @@ Kèm `config._clamp()` cho cả 4 semaphore: `Semaphore(0)` là khoá chết nga
 
 3 test mở `crawler_cache.db` trong thư mục tải thật.
 
-- [ ] 10.1 `setUpModule`: đặt `config.DOWNLOAD_DIR` + `os.environ["RPHANG_DIR"]` về temp
-- [ ] 10.2 `tearDownModule`: dọn temp
-- [ ] 10.3 Chuyển 4 case của `audit_repro.py` thành test thật
-- [ ] 10.4 Test chạy được khi `E:\` không tồn tại (mô phỏng CI)
+- [x] 10.1 `setUpModule`: đặt `config.DOWNLOAD_DIR` + `os.environ["RPHANG_DIR"]` về temp
+- [x] 10.2 `tearDownModule`: dọn temp
+- [x] 10.3 Chuyển 4 case của `audit_repro.py` thành test thật
+- [x] 10.4 Test chạy được khi `E:\` không tồn tại (mô phỏng CI)
 
-**Bằng chứng:** suite xanh trong môi trường không có `E:\`
+**Bằng chứng:**
+
+```
+Xác nhận lỗi trước khi sửa: crawler_cache.db production bị sửa lúc 03:45:24
+  (chính là lần chạy test ngay trước đó)
+
+Sau khi sửa:
+  tồn tại: True | size: 442368
+  mtime trước: 1793825124.7247849
+  mtime sau  : 1793825124.7247849
+  BỊ GHI BỞI TEST? False
+  temp dir sót lại: 0
+
+python -m unittest test_v72.TestSuiteIsHermetic -> Ran 3 tests, OK
+python -m unittest test_v72 -> Ran 86 tests, OK
+```
+
+**Negative control** (vô hiệu `setUpModule` để mô phỏng trạng thái cũ):
+
+```
+failures: 3 -> test phát hiện được việc test chạm vào thư mục thật
+```
+
+**Hai điều chỉnh so với kế hoạch:**
+
+1. **10.3 hoãn.** Bốn case của `audit_repro.py` đã được phủ bằng test thật rồi
+   (C1→`TestEngineBanner`, C2→`TestDedupeWithinThread`, C3→`TestTimeoutIsNotSilence`,
+   C4→`TestVideoNameCollision`). Chuyển thêm sẽ tạo test trùng, không thêm giá trị.
+
+2. **Sửa thêm một lỗi phát sinh:** `tearDownModule` gọi `rmtree(ignore_errors=True)`
+   nhưng `MediaCache` chưa `close()` nên Windows khoá file → thư mục tạm ở lại mãi.
+   Đã đóng cache trong `finally` của cả 3 test dựng app, và thêm retry + `gc.collect()`
+   trong `tearDownModule`. Kiểm lại: `temp dir sót lại: 0`.
 
 ---
 
