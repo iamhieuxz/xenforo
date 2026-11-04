@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-import selectors as S
+import xf_selectors as S
 
 
 def make_soup(html):

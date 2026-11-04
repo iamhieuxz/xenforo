@@ -12,7 +12,7 @@ import unittest
 
 from bs4 import BeautifulSoup
 
-import selectors as S
+import xf_selectors as S
 import xenforo_parse as X
 import config
 import browser_launcher as B
@@ -626,6 +626,53 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(a_ok)
         self.assertEqual(n2, 0, "đã tải thành công rồi thì phải clone, không tải lại")
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
+
+
+class TestNoStdlibShadowing(unittest.TestCase):
+    """Không file nào trong project được trùng tên module chuẩn của Python.
+
+    Bug cũ: module nội bộ tên `selectors.py` che `selectors` của stdlib. Mọi
+    `import selectors` - kể cả trong asyncio - nhận file của project. Trên
+    Windows Python 3.10 chưa nổ vì mặc định dùng ProactorEventLoop, nhưng chỉ
+    cần đổi loop policy hoặc lên bản Python khác là app chết lúc tạo event loop.
+    """
+
+    # Module chuẩn dễ bị trùng nhất khi đặt tên file trong project.
+    SHADOW_PRONE = {
+        "selectors", "types", "queue", "code", "copy", "io", "abc", "json",
+        "token", "time", "signal", "socket", "threading", "logging", "hashlib",
+    }
+
+    def _project_modules(self):
+        import pathlib
+        root = pathlib.Path(__file__).parent
+        return {p.stem for p in root.glob("*.py")}
+
+    def test_stdlib_selectors_is_not_shadowed(self):
+        import selectors
+        self.assertNotEqual(
+            os.path.basename(getattr(selectors, "__file__", "")),
+            "xf_selectors.py", "phải là module của stdlib, không phải file project")
+        self.assertTrue(hasattr(selectors, "DefaultSelector"),
+                        "stdlib selectors bị che -> asyncio không tạo được event loop")
+
+    def test_selector_event_loop_can_be_created(self):
+        """Đây chính là thứ đã chết khi bị che: AttributeError DefaultSelector."""
+        import asyncio
+        loop = asyncio.SelectorEventLoop()
+        loop.close()
+
+    def test_no_project_file_collides_with_stdlib(self):
+        collided = sorted(self._project_modules() & self.SHADOW_PRONE)
+        for name in collided:
+            self.fail(f"file {name}.py trùng tên module chuẩn -> che stdlib khi import")
+
+    def test_internal_constants_module_still_works(self):
+        """Đổi tên không được làm mất hằng số nào phần parse đang dùng."""
+        for const in ("IMAGE_EXT", "VIDEO_EXT", "FILE_EXT", "FILE_URL_RE",
+                      "IMAGE_URL_RE", "VIDEO_URL_RE", "NOISE_URL_PARTS",
+                      "NON_MEDIA_CONTENT_TYPES", "RETRY_STATUSES"):
+            self.assertTrue(hasattr(S, const), f"thiếu hằng {const} trong xf_selectors")
 
 
 class TestVideoNameCollision(unittest.TestCase):

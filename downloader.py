@@ -11,7 +11,7 @@ import shutil
 import aiofiles
 
 import config
-import selectors as S
+import xf_selectors as S
 from xenforo_parse import clean_name, ext_for, get_url_filename
 
 

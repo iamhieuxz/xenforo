@@ -17,7 +17,7 @@
 | 2 | C2 — `seen_hashes` chỉ ghi khi thành công | 🔴 | P0 | [x] |
 | 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [x] |
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [x] |
-| 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [ ] |
+| 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [x] |
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [ ] |
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [ ] |
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [ ] |
@@ -173,12 +173,33 @@ không `clone_cached` sẽ không trúng và app tải trùng thay vì tái sử
 
 **File:** `selectors.py` → `xf_selectors.py`, `xenforo_parse.py`, `downloader.py`
 
-- [ ] 5.1 `git mv selectors.py xf_selectors.py`
-- [ ] 5.2 Sửa `import selectors as S` ở 2 file
-- [ ] 5.3 Test: `import selectors` trả về module stdlib (`DefaultSelector` tồn tại)
-- [ ] 5.4 Test: `asyncio.SelectorEventLoop()` tạo được
+- [x] 5.1 `git mv selectors.py xf_selectors.py`
+- [x] 5.2 Sửa `import selectors as S` ở 2 file
+- [x] 5.3 Test: `import selectors` trả về module stdlib (`DefaultSelector` tồn tại)
+- [x] 5.4 Test: `asyncio.SelectorEventLoop()` tạo được
 
-**Bằng chứng:** `python -c "import selectors; print(selectors.__file__)"` → đường dẫn stdlib
+**Bằng chứng:**
+
+```
+python -c "import selectors; print(selectors.__file__)"
+  -> ...\Python310\lib\selectors.py     (trước: .\selectors.py)
+python -c "import selectors; print(hasattr(selectors,'DefaultSelector'))"  -> True
+python -c "import asyncio; asyncio.SelectorEventLoop()"                    -> OK
+python -m unittest test_v72 -> Ran 67 tests, OK
+```
+
+Thực tế phải sửa **3 file** (kế hoạch ghi 2): `downloader.py`, `xenforo_parse.py`,
+`test_v72.py`.
+
+**Negative control** — kiểm rằng test thật sự bắt được lỗi:
+
+```
+Copy-Item xf_selectors.py selectors.py   -> FAILED (failures=2, errors=1)
+Remove-Item selectors.py                 -> OK
+```
+
+Test chống trùng tên với danh sách module chuẩn (`selectors`, `types`, `queue`,
+`code`, `copy`, ...) nên lần sau ai đặt tên file trùng sẽ bị chặn ngay.
 
 ---
 
