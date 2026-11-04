@@ -18,7 +18,7 @@
 | 3 | C3 — phân loại TIMEOUT | 🔴 | P0 | [x] |
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [x] |
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [x] |
-| 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [ ] |
+| 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [x] |
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [ ] |
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [ ] |
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [ ] |
@@ -207,13 +207,36 @@ Test chống trùng tên với danh sách module chuẩn (`selectors`, `types`, 
 
 **File:** `v72.py`
 
-- [ ] 6.1 Tách `_apply_running_state()` — set trạng thái nút theo `current_loop`
-- [ ] 6.2 Gọi ở cuối `_build_ui()` và trong `_safe_change_buttons_state`
-- [ ] 6.3 Chuyển `_bind_keys()` vào cuối `_build_ui()` để phím tắt sống lại sau rebuild
-- [ ] 6.4 `toggle_theme` không reset `_had_error`/`_last_detail`/bộ đếm
-- [ ] 6.5 Test: toggle mid-scan → nút Quét vẫn disabled, Dừng vẫn normal, `Return` còn binding
+- [x] 6.1 Tách `_apply_running_state()` — set trạng thái nút theo `current_loop`
+- [x] 6.2 Gọi ở cuối `_build_ui()` và trong `_safe_change_buttons_state`
+- [x] 6.3 Chuyển `_bind_keys()` vào cuối `_build_ui()` để phím tắt sống lại sau rebuild
+- [x] 6.4 `toggle_theme` không reset `_had_error`/`_last_detail`/bộ đếm
+- [x] 6.5 Test: toggle mid-scan → nút Quét vẫn disabled, Dừng vẫn normal, `Return` còn binding
 
-**Bằng chứng:** test 6.5 xanh
+**Bằng chứng:**
+
+```
+python -m unittest test_v72.TestThemeSwitchMidScan -> Ran 5 tests, OK
+python -m unittest test_v72 -> Ran 72 tests, OK
+```
+
+Kiểm trực tiếp trên GUI thật (trước → sau):
+
+```
+mid-scan:            scan=disabled | stop=normal
+AFTER theme switch:  scan=disabled | stop=normal     (trước khi sửa: normal | disabled)
+   entry Return binding = CO    (trước: MAT)
+   Ctrl+Return binding  = CO    (trước: MAT)
+```
+
+**Phát hiện thêm khi sửa:** `toggle_theme` còn **xoá sạch nội dung người dùng đã
+gõ** — destroy widget là mất text trong ô Username, ô URL bài viết và ô lọc.
+Đã lưu/khôi phục cả ba. Không có trong kế hoạch ban đầu, phát hiện lúc kiểm tra
+thực tế.
+
+**Ghi chú thiết kế:** `_is_running()` đọc `current_loop` thay vì màu/state của
+nút. Nếu suy ra từ nút thì chính cái bug này sẽ tự tái sinh: hàm được gọi để
+*sửa* trạng thái nút lại đang *đọc* trạng thái nút vừa bị reset.
 
 ---
 

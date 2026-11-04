@@ -188,7 +188,17 @@ class XenForoScannerApp:
         self.btn_theme.pack(side="left")
 
     def toggle_theme(self):
-        """Đổi sáng/tối: sửa token rồi dựng lại toàn bộ UI từ nguồn, không vá tay."""
+        """Đổi sáng/tối: sửa token rồi dựng lại toàn bộ UI từ nguồn, không vá tay.
+
+        Dựng lại nghĩa là mọi widget cũ bị destroy, nên phải khôi phục ba thứ
+        mà _build_ui không tự biết: trạng thái nút đang chạy, phím tắt (bind
+        gắn vào widget cũ nên mất), và nội dung ô lọc.
+        """
+        typed_user = self.cmb_username.get().strip()
+        typed_box = self.cmb_box_url.get().strip()
+        typed_url = self.ent_thread_url.get().strip()
+        needle = self.ent_filter.get().strip()
+
         self.theme_name = "warm" if self.theme_name == "light" else "light"
         save_theme(self.theme_name)
         self._apply_palette()
@@ -197,7 +207,17 @@ class XenForoScannerApp:
             child.destroy()
         self.root.configure(bg=self.BG_MAIN)
         self._build_ui()
+
+        # Khôi phục nội dung người dùng đã gõ: destroy widget là mất sạch.
+        self.cmb_username.set(typed_user)
+        self.cmb_box_url.set(typed_box)
+        if typed_url:
+            self.ent_thread_url.insert(0, typed_url)
+        if needle:
+            self.ent_filter.insert(0, needle)
+
         self._apply_filter()   # _log_lines còn nguyên nên log hiện lại sau khi đổi màu
+        self._apply_running_state()   # đang quét thì nút phải giữ đúng trạng thái
 
     def auto_launch_browser(self):
         """Bật trình duyệt cổng 9222 ngay khi mở app (chạy ngoài GUI để không treo)."""
@@ -374,6 +394,11 @@ class XenForoScannerApp:
         # Không reset: khi đổi theme, UI dựng lại và danh sách này phải còn để vẽ log.
         if not hasattr(self, "_log_lines"):
             self._log_lines = []
+
+        # Bind lại phím tắt sau MỖI lần dựng UI: bind gắn vào đối tượng widget,
+        # destroy widget cũ là mất binding. Bản cũ chỉ bind một lần lúc khởi động
+        # nên sau khi đổi theme, Enter ở ô URL và Ctrl+Enter đều chết.
+        self._bind_keys()
 
     def _card_header(self, parent, text, color):
         """Tiêu đề thẻ: chữ nhỏ, giãn chữ, không emoji."""
@@ -575,6 +600,24 @@ class XenForoScannerApp:
     def change_buttons_state(self, running=True):
         self.root.after(0, self._safe_change_buttons_state, running)
 
+    def _is_running(self):
+        """Có engine đang chạy không. Dựa trên loop, không dựa trên màu nút:
+        màu nút bị reset mỗi lần dựng lại UI nên không tin được."""
+        loop = self.current_loop
+        return bool(loop) and not loop.is_closed()
+
+    def _apply_running_state(self):
+        """Đặt trạng thái nút theo việc engine có đang chạy hay không.
+
+        Tách riêng vì _build_ui dựng lại nút từ đầu: không gọi hàm này sau khi
+        dựng thì đổi theme giữa lúc quét sẽ đưa nút về "bấm được", cho phép mở
+        engine thứ hai chạy song song trên cùng stop_event và cache.
+        """
+        try:
+            self._safe_change_buttons_state(self._is_running())
+        except tk.TclError:
+            pass
+
     def _safe_change_buttons_state(self, running):
         if running:
             for btn in (self.btn_download_user, self.btn_download_link, self.btn_update_all):
@@ -720,6 +763,6 @@ class XenForoScannerApp:
 if __name__ == "__main__":
     app_root = tk.Tk()
     app = XenForoScannerApp(app_root)
-    app._bind_keys()
+    # _bind_keys() đã được gọi ở cuối _build_ui() nên không cần gọi lại ở đây.
     app.auto_launch_browser()
     app_root.mainloop()

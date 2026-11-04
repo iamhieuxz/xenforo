@@ -628,6 +628,76 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestThemeSwitchMidScan(unittest.TestCase):
+    """Đổi theme KHÔNG được làm mất trạng thái đang chạy.
+
+    Bug cũ: toggle_theme destroy toàn bộ widget rồi _build_ui lại, nhưng không
+    khôi phục trạng thái nút và không bind lại phím tắt. Kết quả: đang quét mà
+    đổi theme -> nút "Quét" bấm được -> mở engine thứ hai chạy song song trên
+    cùng stop_event/cache; Enter ở ô URL và Ctrl+Enter cũng chết.
+    """
+
+    def setUp(self):
+        import tkinter as tk
+        import v72
+        self.tk = tk
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.app = v72.XenForoScannerApp(self.root)
+        self.app.current_loop = __import__("asyncio").new_event_loop()
+
+    def tearDown(self):
+        try:
+            if not self.app.current_loop.is_closed():
+                self.app.current_loop.close()
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def test_scan_buttons_stay_disabled_after_theme_switch(self):
+        self.app.change_buttons_state(True)
+        self.root.update()
+        self.app.toggle_theme()
+        self.root.update()
+        for name in ("btn_download_user", "btn_download_link", "btn_update_all"):
+            self.assertEqual(getattr(self.app, name).cget("state"), "disabled",
+                             f"{name} phải giữ disabled khi đang quét")
+        self.assertEqual(self.app.btn_stop.cget("state"), "normal",
+                         "nút Dừng phải vẫn bấm được")
+
+    def test_stop_button_disabled_when_idle_after_theme_switch(self):
+        self.app.current_loop.close()
+        self.app.toggle_theme()
+        self.root.update()
+        self.assertEqual(self.app.btn_stop.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_download_user.cget("state"), "normal")
+
+    def test_shortcuts_survive_theme_switch(self):
+        self.app.toggle_theme()
+        self.root.update()
+        self.assertTrue(self.app.ent_thread_url.bind("<Return>"),
+                        "Enter ở ô URL phải còn tác dụng sau khi đổi theme")
+        self.assertTrue(self.app.root.bind("<Control-Return>"))
+        self.assertTrue(self.app.root.bind("<Escape>"))
+
+    def test_typed_input_survives_theme_switch(self):
+        self.app.cmb_username.set("user_dang_go")
+        self.app.ent_thread_url.insert(0, "https://r/threads/x.1/")
+        self.app.ent_filter.insert(0, "loi")
+        self.app.toggle_theme()
+        self.root.update()
+        self.assertEqual(self.app.cmb_username.get(), "user_dang_go")
+        self.assertEqual(self.app.ent_thread_url.get(), "https://r/threads/x.1/")
+        self.assertEqual(self.app.ent_filter.get(), "loi")
+
+    def test_is_running_reflects_loop_state(self):
+        self.assertTrue(self.app._is_running())
+        self.app.current_loop.close()
+        self.assertFalse(self.app._is_running(), "loop đã đóng thì phải coi là không chạy")
+        self.app.current_loop = None
+        self.assertFalse(self.app._is_running())
+
+
 class TestNoStdlibShadowing(unittest.TestCase):
     """Không file nào trong project được trùng tên module chuẩn của Python.
 
