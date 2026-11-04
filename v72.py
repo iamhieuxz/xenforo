@@ -683,6 +683,18 @@ class XenForoScannerApp:
             self.engine.emergency_cleanup()
 
     def _launch(self, coro_factory):
+        """Bắt đầu một phiên quét. Trả True nếu thực sự khởi động.
+
+        Khoá chống chạy chồng nằm ở ĐÂY, không chỉ ở trạng thái nút: nút bị
+        disable chỉ chặn được đường bấm chuột, còn Ctrl+Enter, phím Enter ở ô
+        nhập và mọi lời gọi nội bộ đều đi thẳng vào hàm này. Hai engine song
+        song dùng chung stop_event và cache sẽ tranh chấp DB và làm nút Dừng
+        không dừng được cái nào.
+        """
+        if self._is_running():
+            self.log("[-] Đang có phiên quét chạy. Bấm Dừng trước khi chạy phiên mới.",
+                     "summary")
+            return False
         self.stop_event.clear()
         self._had_error = False
         self._last_detail = ""
@@ -690,9 +702,13 @@ class XenForoScannerApp:
         self.change_buttons_state(running=True)
         self.set_status("ĐANG QUÉT", self.ACCENT)
         threading.Thread(target=self.run_async_engine, args=(coro_factory,), daemon=True).start()
+        return True
 
     # ---------- điểm vào từ UI ----------
     def start_single_crawl_thread(self):
+        if self._is_running():
+            self._warn_already_running()
+            return
         target_user = self.cmb_username.get().strip()
         box_url = self.cmb_box_url.get().strip()
         if not target_user:
@@ -704,6 +720,9 @@ class XenForoScannerApp:
         self._launch(lambda: self.engine.crawl_users([target_user], box_url))
 
     def start_link_crawl_thread(self):
+        if self._is_running():
+            self._warn_already_running()
+            return
         input_url = self.ent_thread_url.get().strip()
         if not input_url:
             self.log("[-] Lỗi: Bạn chưa nhập đường dẫn bài viết!", "error")
@@ -711,6 +730,11 @@ class XenForoScannerApp:
         self._launch(lambda: self.engine.crawl_link(input_url))
 
     def start_update_all_thread(self):
+        # Kiểm trước khi quét lại ổ: refresh() ghi vào SQLite, không nên chạy
+        # chen vào giữa một phiên đang đọc/ghi cùng DB.
+        if self._is_running():
+            self._warn_already_running()
+            return
         box_url = self.cmb_box_url.get().strip()
         if not box_url:
             self.log("[-] Lỗi: Bạn chưa nhập Link Chuyên Mục (Box URL)!", "error")
@@ -725,6 +749,10 @@ class XenForoScannerApp:
         self._sync_user_dropdown()
         self.log(f"\n[*] Tìm thấy {len(local_users)} User local. Tiến hành cập nhật đa luồng...", "bulk")
         self._launch(lambda: self.engine.crawl_users(local_users, box_url))
+
+    def _warn_already_running(self):
+        self.log("[-] Đang có phiên quét chạy. Bấm Dừng trước khi chạy phiên mới.",
+                 "summary")
 
     def _sync_user_dropdown(self):
         """Đẩy danh sách mới vào dropdown mà không làm mất user đang gõ."""

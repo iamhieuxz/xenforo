@@ -19,7 +19,7 @@
 | 4 | C4 — trùng tên video/file | 🔴 | P0 | [x] |
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [x] |
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [x] |
-| 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [ ] |
+| 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [x] |
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [ ] |
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [ ] |
 | 10 | M3 — test hermetic | 🟡 | P3 | [ ] |
@@ -244,11 +244,33 @@ nút. Nếu suy ra từ nút thì chính cái bug này sẽ tự tái sinh: hàm
 
 **File:** `v72.py` (`_launch`, `_focused_primary`)
 
-- [ ] 7.1 Guard đầu `_launch`: nếu loop đang chạy → log cảnh báo, return
-- [ ] 7.2 `_focused_primary` kiểm tra trạng thái trước khi gọi
-- [ ] 7.3 Test: gọi `_launch` 2 lần liên tiếp → chỉ 1 engine
+- [x] 7.1 Guard đầu `_launch`: nếu loop đang chạy → log cảnh báo, return
+- [x] 7.2 `_focused_primary` kiểm tra trạng thái trước khi gọi
+- [x] 7.3 Test: gọi `_launch` 2 lần liên tiếp → chỉ 1 engine
 
-**Bằng chứng:** test 7.3 xanh
+**Bằng chứng:**
+
+```
+Ctrl+Enter khi đang quét            -> 0 engine khởi động
+bấm Quét 1 User khi đang quét       -> 0
+bấm Quét 1 Thớt khi đang quét       -> 0
+bấm Cập nhật toàn bộ khi đang quét  -> 0
+sau khi loop đóng, bấm lại          -> 1   (đúng, phải cho chạy)
+
+python -m unittest test_v72.TestRunGuard -> Ran 4 tests, OK
+python -m unittest test_v72 -> Ran 76 tests, OK
+```
+
+**Ghi chú thiết kế:** khoá đặt ở `_launch` chứ không chỉ ở trạng thái nút. Nút
+disable chỉ chặn được đường bấm chuột; `_focused_primary` (Ctrl+Enter và phím
+Enter ở ô nhập) gọi thẳng hàm start nên đi vòng qua. Đã kiểm cả 4 đường vào.
+
+`start_update_all_thread` được kiểm **trước** khi `local_users.refresh()` — vì
+refresh ghi vào SQLite, không nên chen vào giữa phiên đang đọc/ghi cùng DB.
+
+**Phát hiện thêm:** test GUI để lại nhiễu Tcl (`invalid command name ..._safe_log`,
+`application has been destroyed`) do `after(0)` còn treo lúc destroy root. Thêm
+`root.update()` vào `tearDown` để xả hết callback — output test giờ sạch.
 
 ---
 

@@ -628,6 +628,75 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestRunGuard(unittest.TestCase):
+    """Không được mở engine thứ hai khi đang có phiên chạy.
+
+    Bug cũ: _launch không kiểm tra gì, và _focused_primary gọi thẳng hàm start
+    nên bỏ qua trạng thái disabled của nút. Hai engine song song dùng chung
+    stop_event và cache -> tranh chấp SQLite, nút Dừng không dừng được cái nào.
+    """
+
+    def setUp(self):
+        import tkinter as tk
+        import v72
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.app = v72.XenForoScannerApp(self.root)
+        self.started = []
+        self.app.run_async_engine = lambda factory: self.started.append(factory)
+        self.app.cmb_username.set("someone")
+        self.app.cmb_box_url.set("https://r/box/x.140/")
+        self.app.ent_thread_url.insert(0, "https://r/threads/x.1/")
+
+    def tearDown(self):
+        try:
+            # Chạy hết callback after(0) còn treo TRƯỚC khi destroy: nếu destroy
+            # trước, Tcl báo "invalid command name ..._safe_log" và
+            # "application has been destroyed" làm nhiễu output test.
+            self.root.update()
+        except Exception:
+            pass
+        try:
+            if self.app.current_loop and not self.app.current_loop.is_closed():
+                self.app.current_loop.close()
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def _start_fake_run(self):
+        import asyncio
+        self.app.current_loop = asyncio.new_event_loop()
+
+    def test_launch_refuses_second_run(self):
+        self._start_fake_run()
+        self.assertFalse(self.app._launch(lambda: None), "_launch phải từ chối")
+        self.assertEqual(self.started, [])
+
+    def test_launch_allows_when_idle(self):
+        self.assertIsNone(self.app.current_loop)
+        self.assertTrue(self.app._launch(lambda: None), "rảnh thì phải cho chạy")
+        self.assertEqual(len(self.started), 1)
+
+    def test_all_entry_points_blocked_while_running(self):
+        """Phải chặn cả 4 đường: 3 nút + Ctrl+Enter. Nút disabled không đủ."""
+        self._start_fake_run()
+        self.app._focused_primary()
+        self.app.start_single_crawl_thread()
+        self.app.start_link_crawl_thread()
+        self.app.start_update_all_thread()
+        self.assertEqual(self.started, [],
+                         "không đường nào được khởi động engine khi đang quét")
+
+    def test_closed_loop_does_not_block(self):
+        """Loop đã đóng = phiên trước kết thúc, phải cho chạy lại."""
+        loop = __import__("asyncio").new_event_loop()
+        loop.close()
+        self.app.current_loop = loop
+        self.app.start_link_crawl_thread()
+        self.assertEqual(len(self.started), 1,
+                         "loop đã đóng không được coi là đang chạy")
+
+
 class TestThemeSwitchMidScan(unittest.TestCase):
     """Đổi theme KHÔNG được làm mất trạng thái đang chạy.
 
@@ -647,6 +716,10 @@ class TestThemeSwitchMidScan(unittest.TestCase):
         self.app.current_loop = __import__("asyncio").new_event_loop()
 
     def tearDown(self):
+        try:
+            self.root.update()   # chạy hết after(0) treo trước khi destroy
+        except Exception:
+            pass
         try:
             if not self.app.current_loop.is_closed():
                 self.app.current_loop.close()
