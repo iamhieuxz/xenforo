@@ -639,7 +639,8 @@ class XenForoScannerApp:
         self.current_loop = loop
         asyncio.set_event_loop(loop)
         try:
-            self.engine = CrawlerEngine(self.cache, self.log, self.stop_event)
+            self.engine = CrawlerEngine(self.cache, self.log, self.stop_event,
+                                        download_dir=self.download_dir)
             loop.run_until_complete(coro_factory())
         except asyncio.CancelledError:
             pass

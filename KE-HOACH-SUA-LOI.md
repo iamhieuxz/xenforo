@@ -20,7 +20,7 @@
 | 5 | H1 — đổi tên `selectors.py` | 🟠 | P1 | [x] |
 | 6 | H2 — đổi theme giữa lúc quét | 🟠 | P1 | [x] |
 | 7 | H3 — khoá chống chạy chồng | 🟠 | P1 | [x] |
-| 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [ ] |
+| 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [x] |
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [ ] |
 | 10 | M3 — test hermetic | 🟡 | P3 | [ ] |
 | 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [ ] |
@@ -280,12 +280,28 @@ refresh ghi vào SQLite, không nên chen vào giữa phiên đang đọc/ghi c�
 
 Fallback sang `~/RPHANG` làm cache và media nằm hai nơi khác nhau.
 
-- [ ] 8.1 `CrawlerEngine.__init__` nhận `download_dir=None` (mặc định `config.DOWNLOAD_DIR`)
-- [ ] 8.2 `crawl_thread` dùng `self.download_dir`
-- [ ] 8.3 `v72.run_async_engine` truyền `self.download_dir`
-- [ ] 8.4 Test: fallback → cache và media cùng gốc
+- [x] 8.1 `CrawlerEngine.__init__` nhận `download_dir=None` (mặc định `config.DOWNLOAD_DIR`)
+- [x] 8.2 `crawl_thread` dùng `self.download_dir`
+- [x] 8.3 `v72.run_async_engine` truyền `self.download_dir`
+- [x] 8.4 Test: fallback → cache và media cùng gốc
 
-**Bằng chứng:** test 8.4 xanh
+**Bằng chứng:**
+
+```
+mặc định              -> download_dir == config.DOWNLOAD_DIR   : True
+khi fallback (tiêm)   -> C:\Users\test\RPHANG
+cache và media cùng gốc: True
+crawl_thread còn đọc config.DOWNLOAD_DIR? False
+crawl_thread dùng self.download_dir?      True
+
+python -m unittest test_v72.TestDownloadDirInjection -> Ran 4 tests, OK
+python -m unittest test_v72 -> Ran 80 tests, OK
+```
+
+**Ghi chú:** test thứ ba chốt bằng `inspect.getsource` — nếu sau này ai thêm lại
+`config.DOWNLOAD_DIR` vào `crawl_thread`, test fail ngay. Test thứ tư dựng đúng
+kịch bản fallback (cache và media trong cùng thư mục tạm) và kiểm `thread_folder`
+nằm dưới gốc đó.
 
 ---
 

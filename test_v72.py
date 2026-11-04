@@ -628,6 +628,59 @@ class TestDedupeWithinThread(unittest.TestCase):
         self.assertTrue(b_ok, "clone phải tạo ra file thứ hai")
 
 
+class TestDownloadDirInjection(unittest.TestCase):
+    """Engine phải dùng thư mục được TIÊM, không đọc config trực tiếp.
+
+    Bug cũ: v72._resolve_dir() fallback sang ~/RPHANG khi ổ cấu hình hỏng và đặt
+    cache ở đó, nhưng engine vẫn ghi media vào config.DOWNLOAD_DIR. Kết quả:
+    cache trỏ đường dẫn không tồn tại -> mất tác dụng khử trùng lặp, lần sau tải
+    lại toàn bộ.
+    """
+
+    def _engine(self, download_dir=None):
+        import threading
+        import engine
+        return engine.CrawlerEngine(cache=None, log=lambda *a, **k: None,
+                                    stop_event=threading.Event(),
+                                    download_dir=download_dir)
+
+    def test_defaults_to_config(self):
+        self.assertEqual(self._engine().download_dir, config.DOWNLOAD_DIR)
+
+    def test_injected_dir_wins_over_config(self):
+        injected = r"C:\Users\test\RPHANG"
+        self.assertEqual(self._engine(injected).download_dir, injected)
+        self.assertNotEqual(injected, config.DOWNLOAD_DIR)
+
+    def test_crawl_thread_uses_instance_dir_not_config(self):
+        """Chốt bằng source: không còn chỗ nào đọc config.DOWNLOAD_DIR trong engine."""
+        import inspect
+        import engine
+        src = inspect.getsource(engine.CrawlerEngine.crawl_thread)
+        self.assertNotIn("config.DOWNLOAD_DIR", src,
+                         "crawl_thread không được đọc config trực tiếp")
+        self.assertIn("self.download_dir", src)
+
+    def test_fallback_keeps_cache_and_media_together(self):
+        """Kịch bản fallback: cache và media phải cùng một gốc."""
+        import os, tempfile, shutil
+        from cache import MediaCache, LocalUserIndex
+        tmp = tempfile.mkdtemp(prefix="fallback")
+        try:
+            fallback = os.path.join(tmp, "RPHANG")
+            os.makedirs(fallback)
+            app_dir = fallback                      # mô phỏng _resolve_dir
+            cache = MediaCache(os.path.join(app_dir, "crawler_cache.db"))
+            LocalUserIndex(cache.conn)
+            eng = self._engine(app_dir)
+            folder = X.thread_folder(eng.download_dir, "user", "title", "2024-01-01")
+            self.assertTrue(os.path.normpath(folder).startswith(os.path.normpath(app_dir)),
+                            "media phải nằm dưới cùng gốc với cache")
+            cache.close()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestRunGuard(unittest.TestCase):
     """Không được mở engine thứ hai khi đang có phiên chạy.
 

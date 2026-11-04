@@ -17,9 +17,17 @@ from downloader import Downloader, plan_jobs, count_files
 
 
 class CrawlerEngine:
-    def __init__(self, cache, log, stop_event):
+    def __init__(self, cache, log, stop_event, download_dir=None):
+        """download_dir: thư mục gốc để ghi media.
+
+        Phải TIÊM vào chứ không đọc config.DOWNLOAD_DIR trực tiếp: khi ổ cấu
+        hình không dùng được, v72._resolve_dir() fallback sang ~/RPHANG và đặt
+        cache ở đó, nhưng engine vẫn ghi media vào config.DOWNLOAD_DIR ->
+        cache trỏ đường dẫn không tồn tại, mất tác dụng khử trùng lặp.
+        """
         self.log = log
         self.stop_event = stop_event
+        self.download_dir = download_dir or config.DOWNLOAD_DIR
         self.db_lock = asyncio.Lock()
         self.tab_semaphore = asyncio.Semaphore(config.TAB_SEM)
         self.downloader = Downloader(
@@ -256,7 +264,7 @@ class CrawlerEngine:
                 # Báo trước khi tải: 1 thread có thể mất cả chục giây vì file nặng,
                 # không có dòng này thì nhìn log tưởng app treo.
                 self.log(f"   [↓] Bài {idx}: {title[:60]}")
-                folder = X.thread_folder(config.DOWNLOAD_DIR, author, title, date_prefix)
+                folder = X.thread_folder(self.download_dir, author, title, date_prefix)
                 os.makedirs(folder, exist_ok=True)
 
                 current = thread_url
