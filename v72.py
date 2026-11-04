@@ -65,6 +65,20 @@ PALETTE = {
 # Đường dẫn file ghi chọn theme, để lần sau mở app vẫn dùng đúng bảng màu đã chọn.
 _THEME_FILE = os.path.join(os.path.expanduser("~"), ".xenforo_theme")
 
+# Thang khoảng cách 8 điểm. Mọi padding/gap lấy từ đây, không dùng số tuỳ hứng:
+# đó là thứ giữ nhịp dọc đều giữa các khối và làm giao diện "có hệ thống".
+SPACE = {
+    "xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32,
+}
+
+# Kích thước điều khiển: 2 cỡ nút, 1 cỡ ô nhập. Trước đây có 3 cỡ nút khác nhau
+# (32/42 và padx 10/8) nằm cùng màn hình nên nhìn lệch.
+MIN_LOG_LINES = 10   # sàn hiển thị của vùng nhật ký
+MIN_WINDOW_W = 780   # sàn chiều rộng: dưới mức này nút và ô bắt đầu chồng
+BTN_H_MAIN = 42
+BTN_H_SUB = 30
+INPUT_H = 34
+
 
 def load_theme():
     try:
@@ -117,6 +131,9 @@ class XenForoScannerApp:
         self.root = root
         self.root.title("XENFORO CRAWLER - V72")
         self.root.geometry("1060x820")
+        # Sàn tạm; _enforce_min_geometry() sẽ nâng lên theo chiều cao thật sau khi
+        # dựng UI. Đặt cứng 560 như bản cũ thì vùng nhật ký bị bóp còn 1x1 ở cửa
+        # sổ hẹp — đo được bằng ux_audit.py.
         self.root.minsize(760, 560)
 
         self.theme_name = load_theme()
@@ -181,8 +198,8 @@ class XenForoScannerApp:
     def _make_theme_button(self, parent):
         """Nút đổi sáng/tối: ký hiệu + nhãn tiếng Việt, có viền để thấy rõ.
 
-        Ký tự ◐ trần trên nền app rất dễ bị bỏ qua. Nhãn 'Giao diện' nói rõ
-        nút làm gì; viền accent tách nó khỏi nền.
+        Trả về widget để caller tự đặt vào grid của header (bố cục mới dùng grid,
+        nên hàm này không pack nữa).
         """
         self.btn_theme = tk.Button(
             parent, text="◐  Giao diện", relief="flat", bd=0,
@@ -191,8 +208,8 @@ class XenForoScannerApp:
             highlightbackground=self.BORDER, highlightthickness=1,
             highlightcolor=self.ACCENT,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
-            padx=10, pady=6, command=self.toggle_theme)
-        self.btn_theme.pack(side="left")
+            padx=SPACE["md"], pady=5, command=self.toggle_theme)
+        return self.btn_theme
 
     def toggle_theme(self):
         """Đổi sáng/tối: sửa token rồi dựng lại toàn bộ UI từ nguồn, không vá tay.
@@ -283,113 +300,126 @@ class XenForoScannerApp:
             return 0
 
     def _build_ui(self):
-        header = tk.Frame(self.root, bg=self.BG_MAIN, padx=24, pady=18)
+        """Dựng giao diện theo bố cục "mỗi ô nhập đi với nút của nó".
+
+        Bố cục cũ đặt 3 ô nhập ở card trái và 3 nút ở card phải, nên nút
+        "Quét 1 Thớt" cách ô "Link Bài Viết" gần 750px theo đường chéo — người
+        dùng phải nhớ nút nào ứng với ô nào. Bố cục này ghép cặp tại chỗ.
+
+        Ba tầng dọc, tầng giữa được ưu tiên giãn:
+          1. Header: tiêu đề + nút đổi theme (cao cố định)
+          2. Điều khiển: 3 hàng, mỗi hàng = nhãn + ô nhập + nút (cao cố định)
+          3. Nhật ký: chiếm toàn bộ phần còn lại (expand=True + weight)
+        """
+        pad = SPACE["xl"]
+
+        # ---------- 1. Header ----------
+        header = tk.Frame(self.root, bg=self.BG_MAIN, padx=pad, pady=SPACE["lg"])
         header.pack(fill="x")
-        # Cột trái tiêu đề, cột phải trạng thái: dùng weight để trạng thái luôn
-        # bám mép phải khi cửa sổ co giãn.
         header.columnconfigure(0, weight=1)
 
         title_box = tk.Frame(header, bg=self.BG_MAIN)
         title_box.grid(row=0, column=0, sticky="w")
         tk.Label(title_box, text="XENFORO CRAWLER", bg=self.BG_MAIN, fg=self.FG_TEXT,
                  font=self.FONT_TITLE).pack(anchor="w")
-        tk.Label(title_box, text="Playwright Native Fetch · Cache SQLite · Dừng khẩn cấp",
-                 bg=self.BG_MAIN, fg=self.FG_SUB, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        tk.Label(title_box, text="Quét media theo tác giả hoặc theo bài viết",
+                 bg=self.BG_MAIN, fg=self.FG_SUB,
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
-        right_box = tk.Frame(header, bg=self.BG_MAIN)
-        right_box.grid(row=0, column=1, sticky="e", padx=(20, 0))
-        self._make_theme_button(right_box)
+        self._make_theme_button(header).grid(row=0, column=1, sticky="e")
 
-        state_box = tk.Frame(right_box, bg=self.BG_MAIN)
-        state_box.pack(side="right", padx=(12, 0))
-        self.lbl_state = tk.Label(state_box, text="SẴN SÀNG", bg=self.BG_MAIN, fg=self.FG_SUB,
-                                  font=("Segoe UI", 10, "bold"))
-        self.lbl_state.pack(anchor="e")
-        self.lbl_progress = tk.Label(state_box, text="", bg=self.BG_MAIN, fg=self.FG_SUB,
-                                     font=("Segoe UI", 9))
-        self.lbl_progress.pack(anchor="e", pady=(2, 0))
+        tk.Frame(self.root, bg=self.BORDER, height=1).pack(fill="x", padx=pad)
 
-        tk.Frame(self.root, bg=self.BORDER, height=1).pack(fill="x", padx=24, pady=(10, 0))
+        # ---------- 2. Điều khiển ----------
+        body = tk.Frame(self.root, bg=self.BG_MAIN, padx=pad, pady=SPACE["md"])
+        body.pack(fill="x")
 
-        grid = tk.Frame(self.root, bg=self.BG_MAIN, padx=24, pady=14)
-        grid.pack(fill="x")
-        grid.columnconfigure(0, weight=1, uniform="cards")
-        grid.columnconfigure(1, weight=1, uniform="cards")
+        # --- Hàng A: quét theo tác giả (2 ô + 1 nút) ---
+        row_a = self._section(body, "QUÉT THEO TÁC GIẢ")
 
-        card_config = tk.Frame(grid, bg=self.BG_CARD, padx=18, pady=16,
-                               highlightbackground=self.BORDER, highlightthickness=1)
-        card_config.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self._card_header(card_config, "THÔNG TIN ĐỐI TƯỢNG", self.ACCENT_TXT)
-
-        self.cmb_box_url = self._combo(card_config, "Link Chuyên Mục (Box URL)",
-                                       config.BOX_PRESETS[0], config.BOX_PRESETS)
-        self.cmb_username = self._combo(card_config, "Username quét đơn",
-                                       self._default_user(), self.local_users.names())
-        self.ent_thread_url = self._entry(card_config, "Nhập Link Bài Viết (URL)", "")
-
-        card_control = tk.Frame(grid, bg=self.BG_CARD, padx=18, pady=16,
-                                highlightbackground=self.BORDER, highlightthickness=1)
-        card_control.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        self._card_header(card_control, "ĐIỀU KHIỂN", self.FG_SUB)
-
-        btn_grid = tk.Frame(card_control, bg=self.BG_CARD)
-        btn_grid.pack(fill="x", pady=(0, 8))
-        btn_grid.columnconfigure(0, weight=1, uniform="b")
-        btn_grid.columnconfigure(1, weight=1, uniform="b")
-
-        self.btn_download_user = self._button(btn_grid, "Quét 1 User", self.ACCENT,
+        self.cmb_box_url = self._combo(row_a, "Chuyên mục (box)", config.BOX_PRESETS[0],
+                                       config.BOX_PRESETS, column=0)
+        self.cmb_username = self._combo(row_a, "Tác giả", self._default_user(),
+                                        self.local_users.names(), column=1)
+        self.btn_download_user = self._button(row_a, "Quét theo tác giả", self.ACCENT,
                                               command=self.start_single_crawl_thread)
-        self.btn_download_user.grid(row=0, column=0, sticky="we", padx=(0, 4))
+        self.btn_download_user.grid(row=1, column=2, sticky="sew", padx=(SPACE["sm"], 0))
 
-        self.btn_download_link = self._button(btn_grid, "Quét 1 Thớt", self.ACCENT,
-                                             command=self.start_link_crawl_thread)
-        self.btn_download_link.grid(row=0, column=1, sticky="we", padx=(4, 0))
+        # --- Hàng B: quét theo bài viết (1 ô rộng + 1 nút) ---
+        row_b = self._section(body, "QUÉT THEO BÀI VIẾT")
+        row_b.columnconfigure(0, weight=1)
 
-        self.btn_stop = self._button(card_control, "Dừng khẩn cấp", self.COLOR_DISABLED,
-                                    fg=self.FG_SUB, command=self.stop_crawl)
+        self.ent_thread_url = self._entry(row_b, "Dán link bài viết", "", column=0)
+        # Nút nằm NGAY CẠNH ô nhập của nó: hết phải nhớ cặp nào ứng với cặp nào.
+        self.btn_download_link = self._button(row_b, "Quét theo bài viết", self.ACCENT,
+                                              command=self.start_link_crawl_thread)
+        self.btn_download_link.grid(row=1, column=1, sticky="sew", padx=(SPACE["sm"], 0))
+
+        # --- Hàng C: trạng thái + Dừng + quét lại tất cả ---
+        row_c = tk.Frame(body, bg=self.BG_CARD, padx=SPACE["lg"], pady=SPACE["md"],
+                         highlightbackground=self.BORDER, highlightthickness=1)
+        row_c.pack(fill="x", pady=(SPACE["sm"], 0))
+        row_c.columnconfigure(0, weight=1)
+
+        # Trạng thái đặt CẠNH nút Dừng, không phải góc phải trên: bấm nút xong thì
+        # mắt đã ở đây, không phải nhảy 146px lên góc màn hình.
+        state_box = tk.Frame(row_c, bg=self.BG_CARD)
+        state_box.grid(row=0, column=0, sticky="w")
+        self.lbl_state = tk.Label(state_box, text="SẴN SÀNG", bg=self.BG_CARD,
+                                  fg=self.FG_SUB, font=("Segoe UI", 10, "bold"))
+        self.lbl_state.pack(anchor="w")
+        self.lbl_progress = tk.Label(state_box, text="Chưa có phiên quét nào.",
+                                     bg=self.BG_CARD, fg=self.FG_SUB,
+                                     font=("Segoe UI", 9))
+        self.lbl_progress.pack(anchor="w", pady=(2, 0))
+
+        self.btn_stop = self._button(row_c, "Dừng", self.COLOR_DISABLED, fg=self.FG_SUB,
+                                     command=self.stop_crawl, primary=False)
         self.btn_stop.configure(state="disabled")
-        self.btn_stop.pack(fill="x", pady=(0, 8))
+        self.btn_stop.grid(row=0, column=1, rowspan=2, sticky="es", padx=(SPACE["md"], SPACE["sm"]))
 
-        self.btn_update_all = self._button(card_control, "Cập nhật toàn bộ User", self.BG_INPUT,
+        self.btn_update_all = self._button(row_c, "Quét lại tất cả tác giả", self.BG_INPUT,
                                            fg=self.FG_TEXT,
-                                           command=self.start_update_all_thread)
-        self.btn_update_all.pack(fill="x")
+                                           command=self.start_update_all_thread,
+                                           primary=False)
+        self.btn_update_all.grid(row=0, column=2, rowspan=2, sticky="es")
 
-        tk.Frame(self.root, bg=self.BORDER, height=1).pack(fill="x", padx=24, pady=(14, 0))
-
-        card_monitor = tk.Frame(self.root, bg=self.BG_CARD, padx=18, pady=14,
+        # ---------- 3. Nhật ký ----------
+        card_monitor = tk.Frame(self.root, bg=self.BG_CARD, padx=SPACE["lg"], pady=SPACE["md"],
                                 highlightbackground=self.BORDER, highlightthickness=1)
-        card_monitor.pack(fill="both", expand=True, padx=24, pady=(12, 22))
+        card_monitor.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
         card_monitor.columnconfigure(0, weight=1)
         card_monitor.rowconfigure(1, weight=1)
 
         log_bar = tk.Frame(card_monitor, bg=self.BG_CARD)
-        log_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        log_bar.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["sm"]))
         tk.Label(log_bar, text="NHẬT KÝ", bg=self.BG_CARD, fg=self.FG_SUB,
                  font=self.FONT_CARD_HEADER).pack(side="left")
 
         log_tools = tk.Frame(log_bar, bg=self.BG_CARD)
         log_tools.pack(side="right")
+
+        self.btn_copy_log = self._button(log_tools, "Sao chép", self.BG_INPUT, fg=self.FG_TEXT,
+                                         command=self.copy_log, primary=False)
+        self.btn_copy_log.pack(side="right", padx=(SPACE["xs"], 0))
+        self.btn_clear_log = self._button(log_tools, "Xóa", self.BG_INPUT, fg=self.FG_TEXT,
+                                          command=self.clear_log, primary=False)
+        self.btn_clear_log.pack(side="right")
+
         self.ent_filter = tk.Entry(log_tools, bg=self.BG_INPUT, fg=self.FG_TEXT,
                                    insertbackground=self.FG_TEXT, font=self.FONT_MAIN, bd=0,
                                    highlightthickness=1, highlightbackground=self.BORDER,
-                                   highlightcolor=self.ACCENT, width=18)
-        self.ent_filter.pack(side="left", padx=(0, 6), ipady=4, ipadx=6)
+                                   highlightcolor=self.ACCENT, width=20)
+        self.ent_filter.pack(side="right", padx=(0, SPACE["sm"]), ipady=4, ipadx=6)
         self.ent_filter.bind("<KeyRelease>", lambda e: self._apply_filter())
         tk.Label(log_tools, text="Lọc", bg=self.BG_CARD, fg=self.FG_SUB,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
-
-        self.btn_copy_log = self._button(log_tools, "Sao chép", self.BG_INPUT, fg=self.FG_TEXT,
-                                        pady=4, padx=10, command=self.copy_log)
-        self.btn_copy_log.pack(side="left", padx=(0, 6))
-        self.btn_clear_log = self._button(log_tools, "Xóa", self.BG_INPUT, fg=self.FG_TEXT,
-                                          pady=4, padx=10, command=self.clear_log)
-        self.btn_clear_log.pack(side="left")
+                 font=("Segoe UI", 9)).pack(side="right", padx=(0, SPACE["xs"]))
 
         self.log_box = scrolledtext.ScrolledText(card_monitor, state='disabled', wrap='word',
                                                  bg=self.BG_INPUT, fg=self.FG_TEXT,
                                                  font=self.FONT_MONO, bd=0,
-                                                 padx=12, pady=10, height=12,
+                                                 padx=SPACE["md"], pady=SPACE["sm"],
+                                                 height=MIN_LOG_LINES,
                                                  highlightthickness=1,
                                                  highlightbackground=self.BORDER)
         self.log_box.grid(row=1, column=0, sticky="nsew")
@@ -406,22 +436,75 @@ class XenForoScannerApp:
         # destroy widget cũ là mất binding. Bản cũ chỉ bind một lần lúc khởi động
         # nên sau khi đổi theme, Enter ở ô URL và Ctrl+Enter đều chết.
         self._bind_keys()
+        self._refresh_action_buttons()
+        self._enforce_min_geometry()
+
+    def _enforce_min_geometry(self):
+        """Đặt minsize theo CHIỀU CAO THẬT của phần điều khiển.
+
+        Bố cục có hai tầng cao cố định (header + khối điều khiển) và một tầng
+        giãn (nhật ký). Nếu minsize nhỏ hơn tổng hai tầng cố định thì tầng giãn
+        bị bóp về 0 — đo được: vùng nhật ký còn 1x1 px ở cửa sổ 760x560, tức là
+        người dùng mất hẳn chỗ đọc log mà không có cảnh báo.
+
+        Tính từ widget thật thay vì đoán số: đổi font/padding sau này thì sàn
+        vẫn đúng.
+        """
+        try:
+            self.root.update_idletasks()
+            chrome = 0
+            for child in self.root.winfo_children():
+                # Chỉ cộng các khối KHÔNG giãn (pack fill="x", không expand).
+                info = child.pack_info() if child.winfo_manager() == "pack" else {}
+                if str(info.get("expand", "0")) in ("0", ""):
+                    chrome += child.winfo_reqheight()
+            # +chiều cao tối thiểu cho nhật ký (MIN_LOG_LINES dòng Consolas 10
+            # cộng padding và thanh tiêu đề của khối đó) + lề trên/dưới.
+            log_min = MIN_LOG_LINES * 17 + 90
+            min_h = chrome + log_min
+            width = max(self.root.winfo_reqwidth(), MIN_WINDOW_W)
+            self.root.minsize(width, min_h)
+        except tk.TclError:
+            pass
+
+    def _section(self, parent, title):
+        """Một nhóm điều khiển: tiêu đề nhỏ + vùng chứa các ô/nút cùng hàng."""
+        box = tk.Frame(parent, bg=self.BG_MAIN)
+        box.pack(fill="x", pady=(0, SPACE["sm"]))
+        tk.Label(box, text=title, bg=self.BG_MAIN, fg=self.FG_SUB,
+                 font=self.FONT_CARD_HEADER).pack(anchor="w", pady=(0, SPACE["xs"]))
+        inner = tk.Frame(box, bg=self.BG_MAIN)
+        inner.pack(fill="x")
+        return inner
 
     def _card_header(self, parent, text, color):
         """Tiêu đề thẻ: chữ nhỏ, giãn chữ, không emoji."""
         tk.Label(parent, text=text, bg=self.BG_CARD, fg=color,
                  font=self.FONT_CARD_HEADER).pack(anchor="w", pady=(0, 12))
 
-    def _button(self, parent, text, bg, fg=None, command=None, pady=9, padx=10):
-        """Nút phẳng, có phản hồi hover/active để bấm không bị cảm giác chết."""
+    def _button(self, parent, text, bg, fg=None, command=None, pady=9, padx=16,
+                primary=True):
+        """Nút phẳng, có phản hồi hover/active để bấm không bị cảm giác chết.
+
+        primary=True: nút hành động chính, cao BTN_H_MAIN, chữ đậm.
+        primary=False: nút phụ, thấp hơn và không đậm — để mắt phân biệt ngay
+        đâu là hành động chính. Bản cũ dùng cùng một cỡ cho tất cả nên nút
+        "Xóa" trông ngang hàng với "Quét 1 User".
+        """
+        font = self.FONT_BTN if primary else ("Segoe UI", 9)
+        if primary:
+            pady = max(pady, 10)
+        else:
+            pady = 5
         btn = tk.Button(parent, text=text, bg=bg, fg=fg or self.FG_ON_ACCENT,
-                        font=self.FONT_BTN, bd=0, relief="flat", cursor="hand2",
+                        font=font, bd=0, relief="flat", cursor="hand2",
                         pady=pady, padx=padx, activebackground=bg,
                         activeforeground=fg or self.FG_ON_ACCENT, command=command)
         btn.bind("<Enter>", lambda e, b=btn, c=bg: self._hover(b, c, True))
         btn.bind("<Leave>", lambda e, b=btn, c=bg, f=fg: self._hover(b, c, False, f))
         btn._base_bg = bg
         btn._base_fg = fg or self.FG_ON_ACCENT
+        btn._primary = primary
         return btn
 
     def _hover(self, btn, base, entering, fg=None):
@@ -441,29 +524,43 @@ class XenForoScannerApp:
         clamp = lambda v: max(0, min(v + amount, 255))
         return "#%02x%02x%02x" % (clamp(r), clamp(g), clamp(b))
 
-    def _entry(self, parent, label, initial):
-        tk.Label(parent, text=label, bg=self.BG_CARD, fg=self.FG_SUB,
+    def _entry(self, parent, label, initial, column=0):
+        """Nhãn + ô nhập, xếp trong grid của `parent` tại `column` cho thẳng hàng.
+
+        Dùng grid thay pack để nhãn/ô/nút cùng hàng có đáy thẳng nhau; pack sẽ
+        làm nút và ô nhập lệch nhau vài pixel vì padding khác nhau.
+        """
+        wrap = tk.Frame(parent, bg=parent.cget("background"))
+        wrap.grid(row=0, column=column, sticky="ew", padx=(0, 0))
+        parent.columnconfigure(column, weight=1) if column == 0 else None
+        tk.Label(wrap, text=label, bg=wrap["background"], fg=self.FG_SUB,
                  font=("Segoe UI", 9)).pack(anchor="w")
-        ent = tk.Entry(parent, bg=self.BG_INPUT, fg=self.FG_TEXT, insertbackground=self.FG_TEXT,
+        ent = tk.Entry(wrap, bg=self.BG_INPUT, fg=self.FG_TEXT, insertbackground=self.FG_TEXT,
                        font=self.FONT_MAIN, bd=0, highlightthickness=1,
                        highlightbackground=self.BORDER, highlightcolor=self.ACCENT)
-        ent.pack(fill="x", pady=(4, 12), ipady=7, ipadx=6)
+        ent.pack(fill="x", pady=(SPACE["xs"], 0), ipady=6, ipadx=6)
         if initial:
             ent.insert(0, initial)
         return ent
 
-    def _combo(self, parent, label, initial, presets):
+    def _combo(self, parent, label, initial, presets, column=0):
         """Dropdown gợi ý, vẫn gõ tay tự do.
 
         Ttk mặc định lấy màu hệ điều hành (sáng) nên phải ép style clam để khớp
         nền tối. Combobox kế thừa Tk vẫn lấy được .get() như các ô khác, nên
         code đọc box_url không phải sửa.
         """
-        tk.Label(parent, text=label, bg=self.BG_CARD, fg=self.FG_SUB,
+        wrap = tk.Frame(parent, bg=parent.cget("background"))
+        wrap.grid(row=0, column=column, sticky="ew", padx=(0, SPACE["sm"]))
+        if column == 0:
+            parent.columnconfigure(0, weight=1)
+        else:
+            parent.columnconfigure(column, weight=1)
+        tk.Label(wrap, text=label, bg=wrap["background"], fg=self.FG_SUB,
                  font=("Segoe UI", 9)).pack(anchor="w")
-        combo = ttk.Combobox(parent, values=presets, font=self.FONT_MAIN)
+        combo = ttk.Combobox(wrap, values=presets, font=self.FONT_MAIN)
         combo.set(initial)
-        combo.pack(fill="x", pady=(4, 10), ipady=5)
+        combo.pack(fill="x", pady=(SPACE["xs"], 0), ipady=5)
         self._style_combo(combo)
         return combo
 
@@ -625,18 +722,53 @@ class XenForoScannerApp:
         except tk.TclError:
             pass
 
+    def _refresh_action_buttons(self):
+        """Bật/tắt nút hành động theo nội dung ô nhập (phòng lỗi trước khi bấm).
+
+        Trước đây bấm khi ô trống vẫn được, rồi app in lỗi vào nhật ký. Người
+        dùng phải đọc nhật ký mới biết mình thiếu gì. Giờ nút tự tắt và đổi màu
+        khi chưa đủ điều kiện — nhìn là biết, không cần bấm thử.
+
+        Không đụng tới trạng thái "đang quét": lúc đó mọi nút đã bị khoá bởi
+        _safe_change_buttons_state, hàm này chỉ lo phần "đủ input hay chưa".
+        """
+        if self._is_running():
+            return
+        try:
+            has_user = bool(self.cmb_username.get().strip())
+            has_box = bool(self.cmb_box_url.get().strip())
+            has_url = bool(self.ent_thread_url.get().strip())
+
+            self._set_enabled(self.btn_download_user, has_user and has_box, primary=True)
+            self._set_enabled(self.btn_download_link, has_url, primary=True)
+            self._set_enabled(self.btn_update_all, has_box, primary=False)
+        except tk.TclError:
+            pass
+
+    def _set_enabled(self, btn, enabled, primary=True):
+        """Đặt nút thành bấm được / không bấm được, giữ đúng màu theo vai trò."""
+        if enabled:
+            bg = self.ACCENT if primary else self.BG_INPUT
+            fg = self.FG_ON_ACCENT if primary else self.FG_TEXT
+            btn.config(state="normal", bg=bg, fg=fg, cursor="hand2")
+        else:
+            btn.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB,
+                       cursor="")
+
     def _safe_change_buttons_state(self, running):
         if running:
             for btn in (self.btn_download_user, self.btn_download_link, self.btn_update_all):
-                btn.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB)
-            self.btn_stop.config(state="normal", bg=self.COLOR_RED, fg=self.FG_ON_ACCENT)
+                btn.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB,
+                           cursor="")
+            self.btn_stop.config(state="normal", bg=self.COLOR_RED, fg=self.FG_ON_ACCENT,
+                                 cursor="hand2")
         else:
-            self.btn_download_user.config(state="normal", bg=self.ACCENT,
-                                          fg=self.FG_ON_ACCENT)
-            self.btn_download_link.config(state="normal", bg=self.ACCENT,
-                                          fg=self.FG_ON_ACCENT)
             self.btn_update_all.config(state="normal", bg=self.BG_INPUT, fg=self.FG_TEXT)
-            self.btn_stop.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB)
+            self.btn_stop.config(state="disabled", bg=self.COLOR_DISABLED, fg=self.FG_SUB,
+                                 cursor="")
+            # Trạng thái bật/tắt của 2 nút quét còn phụ thuộc ô nhập có dữ liệu
+            # hay không, nên để _refresh_action_buttons quyết định.
+            self._refresh_action_buttons()
 
     # ---------- vòng đời ----------
     def run_async_engine(self, coro_factory):
@@ -839,6 +971,12 @@ class XenForoScannerApp:
         root.bind("<Control-l>", lambda e: self.clear_log())
         for w in (self.ent_thread_url, self.ent_filter):
             w.bind("<Return>", lambda e: self._focused_primary())
+        # Nút hành động bật/tắt theo nội dung ô: bắt cả gõ phím lẫn chọn từ
+        # dropdown (Combobox bắn <<ComboboxSelected>>, không bắn <KeyRelease>).
+        for w in (self.cmb_box_url, self.cmb_username, self.ent_thread_url):
+            w.bind("<KeyRelease>", lambda e: self._refresh_action_buttons(), add="+")
+            w.bind("<<ComboboxSelected>>",
+                   lambda e: self._refresh_action_buttons(), add="+")
 
     def _focused_primary(self):
         """Ctrl+Enter chạy đúng nút theo ô đang có con trỏ.
