@@ -38,6 +38,10 @@ SETTLE_MS = 0           # XenForo render server-side: đo thực tế settle=0 v
 MAX_RETRIES = 3
 DOWNLOAD_TIMEOUT_MS = 40000
 NAV_TIMEOUT_MS = 45000
+# Số task tải được phép tồn tại cùng lúc trong một thread. Vượt ngưỡng thì engine
+# chờ bớt trước khi bóc trang tiếp. Không có nó, thread dài (20 trang × 20 post ×
+# 20 ảnh) tạo hàng nghìn task cùng sống dù chỉ DOWNLOAD_SEM cái thực chạy.
+PENDING_LIMIT = 80
 # Khi đang dừng, timeout tải rút xuống còn ngắn. Playwright hiểu timeout là thời
 # gian chờ I/O mỗi lần đọc, nên một video lớn vẫn giữ request sống tới
 # DOWNLOAD_TIMEOUT_MS nếu không rút -> nút Dừng trông như treo.

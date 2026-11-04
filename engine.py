@@ -241,18 +241,35 @@ class CrawlerEngine:
             return
         self.log(f"   [+] {author.upper()}: Định vị thành công {len(thread_urls)} Thread bài viết.")
 
-        async def thread_worker(url, i):
-            async with self.thread_semaphore:
+        # N worker cố định nhận việc từ queue, thay vì tạo một task cho MỖI
+        # thread rồi gather tất cả: box 5.000 thread sinh 5.000 coroutine cùng
+        # sống (dù chỉ THREAD_SEM cái chạy), tốn bộ nhớ và làm chậm dừng.
+        # Queue rỗng + sentinel None để worker biết lúc kết thúc.
+        ordered = sorted(thread_urls)
+        workers = max(1, config.THREAD_SEM)
+        queue = asyncio.Queue()
+        for i, url in enumerate(ordered, 1):
+            queue.put_nowait((url, i))
+
+        async def thread_worker():
+            while True:
                 if self.stop_event.is_set():
                     return
                 try:
-                    await self.crawl_thread(context, url, author, i)
+                    url, i = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    async with self.thread_semaphore:
+                        if self.stop_event.is_set():
+                            return
+                        await self.crawl_thread(context, url, author, i)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     self.log(f"   [!] Lỗi thread {url[:60]}: {e}")
 
-        await asyncio.gather(*[thread_worker(u, i) for i, u in enumerate(sorted(thread_urls), 1)])
+        await asyncio.gather(*[thread_worker() for _ in range(workers)])
 
     # ---------- bóc + tải 1 thread ----------
     async def crawl_thread(self, context, thread_url, author, idx=1):
@@ -309,6 +326,12 @@ class CrawlerEngine:
                             jobs += plan_jobs(imgs, folder, ts, 'image', seq_start=img_idx - len(imgs) + 1)
 
                         pending += await self.downloader.dispatch(context, jobs, current, seen_hashes)
+                        # Chặn `pending` phình to: thread 20 trang × 20 post × 20 ảnh
+                        # sinh hàng nghìn task cùng sống. Chờ bớt khi vượt ngưỡng,
+                        # rồi chỉ giữ lại các task còn chạy.
+                        if len(pending) >= config.PENDING_LIMIT:
+                            await self.downloader.drain(pending)
+                            pending = [t for t in pending if not t.done()]
 
                     current = X.next_page_url(soup, current)
                     if current:

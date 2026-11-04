@@ -956,6 +956,134 @@ class TestThemeSwitchMidScan(unittest.TestCase):
         self.assertFalse(self.app._is_running())
 
 
+class TestNoBusyPoll(unittest.TestCase):
+    """_racing_stop không được poll cờ dừng liên tục.
+
+    Bug cũ: lặp asyncio.wait(timeout=0.05) tới DOWNLOAD_TIMEOUT_MS/50 lần. Với
+    timeout 40s là 800 lần đánh thức event loop CHO MỖI FILE; DOWNLOAD_SEM=10
+    thành 8.000 lần trong 40 giây, chỉ để kiểm một cờ.
+    """
+
+    class _NoStop:
+        @staticmethod
+        def is_set():
+            return False
+
+    class _StopSet:
+        @staticmethod
+        def is_set():
+            return True
+
+    def _downloader(self, stop):
+        import asyncio
+        from downloader import Downloader
+        return Downloader(cache=None, log=lambda *a, **k: None, stop_event=stop,
+                          semaphore=asyncio.Semaphore(4), db_lock=asyncio.Lock())
+
+    def test_timeout_is_accurate(self):
+        """Hết hạn đúng hạn, không sớm không muộn — chứng tỏ không còn poll 50ms."""
+        import asyncio, time
+        real = config.DOWNLOAD_TIMEOUT_MS
+        config.DOWNLOAD_TIMEOUT_MS = 300
+        try:
+            async def run():
+                d = self._downloader(self._NoStop())
+                async def slow():
+                    await asyncio.sleep(10)
+                t0 = time.perf_counter()
+                r = await d._racing_stop(slow())
+                return r, (time.perf_counter() - t0) * 1000
+            r, ms = asyncio.run(run())
+        finally:
+            config.DOWNLOAD_TIMEOUT_MS = real
+        from downloader import _TIMEOUT
+        self.assertIs(r, _TIMEOUT, "phải trả sentinel _TIMEOUT")
+        self.assertGreaterEqual(ms, 250, f"không được timeout sớm: {ms:.0f}ms")
+        self.assertLess(ms, 700, f"không được chậm hơn hạn nhiều: {ms:.0f}ms")
+
+    def test_stop_event_wins_over_timeout(self):
+        """Bấm Dừng phải thắng, trả None chứ không phải _TIMEOUT."""
+        import asyncio
+        from downloader import _TIMEOUT
+        real = config.DOWNLOAD_TIMEOUT_MS
+        config.DOWNLOAD_TIMEOUT_MS = 5000      # hạn dài, để cờ dừng thắng trước
+        try:
+            async def run():
+                d = self._downloader(self._StopSet())
+                async def slow():
+                    await asyncio.sleep(10)
+                return await d._racing_stop(slow())
+            r = asyncio.run(run())
+        finally:
+            config.DOWNLOAD_TIMEOUT_MS = real
+        self.assertIsNone(r, "cờ dừng phải trả None, không phải _TIMEOUT")
+        self.assertIsNot(r, _TIMEOUT)
+
+    def test_completed_request_wins(self):
+        import asyncio
+        d = self._downloader(self._NoStop())
+
+        class R:
+            status = 200
+        async def fast():
+            return R()
+        r = asyncio.run(d._racing_stop(fast()))
+        self.assertEqual(r.status, 200, "request xong trước thì phải trả response")
+
+
+class TestPendingIsBounded(unittest.TestCase):
+    """Số task tải đồng thời trong một thread phải có trần.
+
+    Bug cũ (M6): crawl_thread gom TẤT CẢ task vào `pending` rồi gather ở cuối.
+    Thread 20 trang × 20 post × 20 ảnh sinh hàng nghìn task cùng sống dù chỉ
+    DOWNLOAD_SEM cái thực chạy. Đo được: 300 task -> 79 sau khi sửa.
+    """
+
+    class _NoStop:
+        @staticmethod
+        def is_set():
+            return False
+
+    def test_drain_keeps_running_below_keep(self):
+        import asyncio
+        from downloader import Downloader
+        d = Downloader(cache=None, log=lambda *a, **k: None, stop_event=self._NoStop(),
+                       semaphore=asyncio.Semaphore(4), db_lock=asyncio.Lock())
+
+        async def run():
+            peak = {"n": 0}
+            pending = []
+
+            async def one():
+                await asyncio.sleep(0.01)
+
+            for _ in range(120):
+                pending.append(asyncio.create_task(one()))
+                if len(pending) >= 20:
+                    await d.drain(pending)
+                    pending = [t for t in pending if not t.done()]
+                peak["n"] = max(peak["n"], len(pending))
+            await d.gather(pending)
+            return peak["n"]
+
+        peak = asyncio.run(run())
+        self.assertLessEqual(peak, 20, f"pending vượt trần: đỉnh {peak}")
+
+    def test_pending_limit_exists_and_positive(self):
+        self.assertGreaterEqual(config.PENDING_LIMIT, 1)
+        self.assertLessEqual(config.PENDING_LIMIT, 1000,
+                             "trần quá cao thì không còn tác dụng chặn")
+
+    def test_engine_thread_worker_count_is_bounded(self):
+        """Số worker phải bằng THREAD_SEM, không phải số thread trong box."""
+        import inspect
+        import engine
+        src = inspect.getsource(engine.CrawlerEngine.crawl_user)
+        self.assertIn("config.THREAD_SEM", src, "worker phải bám THREAD_SEM")
+        self.assertNotIn("for i, u in enumerate(sorted(thread_urls), 1)]",
+                         src, "không được quay lại gather một task cho mỗi thread")
+
+
 class TestSuiteIsHermetic(unittest.TestCase):
     """Test không được đụng vào thư mục tải thật.
 

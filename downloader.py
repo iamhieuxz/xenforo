@@ -167,22 +167,41 @@ class Downloader:
         Phân biệt hai trường hợp sau là bắt buộc: bản cũ trả None cho cả hai, nên
         một file tải quá chậm bị xếp vào "CANCELLED" -> counted() không đếm vào
         failed, không log dòng nào. Người dùng thấy "xong" trong khi file mất tích.
+
+        Không poll: dùng asyncio.wait(FIRST_COMPLETED) trên hai task thật. Bản cũ
+        lặp `asyncio.wait(timeout=0.05)` 800 lần cho mỗi file; với DOWNLOAD_SEM=10
+        là 8.000 lần đánh thức event loop trong 40 giây, chỉ để kiểm một cờ.
         """
         get_task = asyncio.ensure_future(coro)
+        stop_task = asyncio.ensure_future(self._stop_waiter())
         try:
-            for _ in range(int(config.DOWNLOAD_TIMEOUT_MS / 50) + 1):
-                done, _ = await asyncio.wait([get_task], timeout=0.05)
-                if done:
-                    return get_task.result()
-                if self.stop_event.is_set():
-                    return None
-            return _TIMEOUT
+            done, _ = await asyncio.wait(
+                {get_task, stop_task},
+                timeout=config.DOWNLOAD_TIMEOUT_MS / 1000,
+                return_when=asyncio.FIRST_COMPLETED)
+
+            if not done:
+                return _TIMEOUT              # hết hạn, không ai thắng
+            if get_task in done:
+                return get_task.result()
+            return None                      # stop_task thắng = người dùng dừng
         finally:
             # Bắt buộc: nếu chính _fetch bị cancel_all() huỷ, CancelledError
-            # ném ra khỏi await asyncio.wait và get_task thành task mồ côi ->
+            # ném ra khỏi await asyncio.wait và các task con thành mồ côi ->
             # "Task was destroyed but it is pending" và giữ connection mở.
-            if not get_task.done():
-                get_task.cancel()
+            for t in (get_task, stop_task):
+                if not t.done():
+                    t.cancel()
+
+    async def _stop_waiter(self):
+        """Task chỉ để "thua cuộc" khi người dùng bấm Dừng.
+
+        Không dùng asyncio.sleep vô hạn: sleep dài giữ timer trong loop và làm
+        thời gian chờ shutdown dài theo. Poll thưa 0.25s là đủ nhạy với nút bấm
+        tay mà không tạo tải đáng kể (4 lần/giây so với 20 lần/giây cũ).
+        """
+        while not self.stop_event.is_set():
+            await asyncio.sleep(0.25)
 
     async def _fetch(self, context, url, save_path, referer_url, url_hash_):
         if self.stop_event.is_set():
@@ -269,6 +288,19 @@ class Downloader:
                         except Exception:
                             pass
             return "FAILED"
+
+    async def drain(self, tasks, keep=0):
+        """Chờ cho tới khi số task chưa xong giảm xuống <= keep.
+
+        Dùng để chặn `pending` phình to trong thread dài. KHÔNG đếm thống kê và
+        KHÔNG log tiến độ — việc đó vẫn do gather() làm ở cuối thread; ở đây chỉ
+        chờ bớt để giới hạn số task đồng thời đang sống.
+        """
+        while True:
+            running = [t for t in tasks if not t.done()]
+            if len(running) <= keep:
+                return
+            await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
 
     async def gather(self, tasks):
         """Chờ tải xong, trả về dict đếm theo loại: {'ok','failed','image','video','file'}.

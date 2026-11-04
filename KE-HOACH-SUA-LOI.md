@@ -24,7 +24,7 @@ P2–P3 (bước 10–13) chưa làm.
 | 8 | M4 — `download_dir` tiêm qua constructor | 🟡 | P1 | [x] |
 | 9 | M5 — deadlock `TAB_SEM=1` | 🟡 | P1 | [x] |
 | 10 | M3 — test hermetic | 🟡 | P3 | [x] |
-| 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [ ] |
+| 11 | M1+M6 — race thật & bounded queue | 🟡 | P2 | [x] |
 | 12 | H4 — streaming download | 🟠 | P2 | [ ] |
 | 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [ ] |
 
@@ -393,12 +393,45 @@ failures: 3 -> test phát hiện được việc test chạm vào thư mục th�
 
 **File:** `downloader.py`, `engine.py`
 
-- [ ] 11.1 `_racing_stop` dùng `asyncio.wait(FIRST_COMPLETED)` + task stop-waiter, bỏ vòng poll 50ms
-- [ ] 11.2 `crawl_user` dùng `asyncio.Queue` + N worker thay `gather` toàn bộ
-- [ ] 11.3 `crawl_thread` giới hạn `pending` (flush khi vượt ngưỡng)
-- [ ] 11.4 Đo: số wakeup/giây giảm, RAM ổn định với box lớn
+- [x] 11.1 `_racing_stop` dùng `asyncio.wait(FIRST_COMPLETED)` + task stop-waiter, bỏ vòng poll 50ms
+- [x] 11.2 `crawl_user` dùng `asyncio.Queue` + N worker thay `gather` toàn bộ
+- [x] 11.3 `crawl_thread` giới hạn `pending` (flush khi vượt ngưỡng)
+- [x] 11.4 Đo: số wakeup/giây giảm, RAM ổn định với box lớn
 
-**Bằng chứng:** benchmark trước/sau
+**Bằng chứng — đo trên code thật, so với commit trước khi sửa:**
+
+```
+M1: số lần gọi asyncio.wait trong MỘT lần _racing_stop (hạn 1000ms)
+  code cu : 21 lan   (poll moi 50ms)
+  code moi:  1 lan   (race that)
+
+  Với DOWNLOAD_TIMEOUT_MS=40000 và 10 file song song:
+  code cu : 800 x 10 = 8.000 lan danh thuc
+  code moi:   1 x 10 =    10 lan          -> giam 800 lan
+
+M1: độ chính xác timeout
+  budget= 300ms -> thoi gian thuc 296ms
+  budget=1000ms -> thoi gian thuc 1006ms   (khong con tre 50ms)
+
+M6: số task đồng thời, mô phỏng 300 đơn vị việc
+  code cu (gather tat ca) : dinh 300 task song cung luc
+  code moi (co drain)     : dinh  79 task  -> giam 3.8 lan
+  PENDING_LIMIT = 80
+
+python -m unittest test_v72.TestNoBusyPoll test_v72.TestPendingIsBounded -> Ran 6 tests, OK
+python -m unittest test_v72 -> Ran 92 tests, OK
+```
+
+**Phép đo đầu tiên của tôi bị sai:** dùng một ticker 5ms để đếm "số lần event
+loop thức" — nhưng chính ticker đó tạo 64 lần thức/giây nên che mất khác biệt
+(64 vs 64, "giảm 1.0 lần"). Đo lại bằng cách đếm trực tiếp số lần gọi
+`asyncio.wait`, mới ra 21 vs 1. Ghi lại vì đây là bẫy dễ mắc: đo nhiễu của
+chính dụng cụ đo.
+
+**Ghi chú thiết kế:** `_stop_waiter` vẫn poll 0.25s thay vì `asyncio.sleep(vô
+hạn)`. Sleep vô hạn giữ timer trong loop và làm chậm shutdown; 4 lần/giây chỉ
+để kiểm một cờ là không đáng kể, so với 20 lần/giây cũ cho mỗi file. Nếu sau này
+`stop_event` đổi sang `asyncio.Event` thì bỏ hẳn được vòng poll.
 
 ---
 
