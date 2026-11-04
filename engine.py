@@ -13,7 +13,7 @@ from playwright.async_api import async_playwright
 import config
 import browser_launcher
 import xenforo_parse as X
-from downloader import Downloader, plan_jobs, count_files
+from downloader import Downloader, plan_jobs, count_files, index_folder
 
 
 class CrawlerEngine:
@@ -27,6 +27,7 @@ class CrawlerEngine:
         """
         self.log = log
         self.stop_event = stop_event
+        self.cache = cache          # cần cho thread_index (ngày mở thread)
         self.download_dir = download_dir or config.DOWNLOAD_DIR
         self.db_lock = asyncio.Lock()
         self.tab_semaphore = asyncio.Semaphore(config.TAB_SEM)
@@ -158,6 +159,12 @@ class CrawlerEngine:
                     ok = False
                     return
                 self.log(f"[✓] Đã định danh chính xác tác giả gốc: {author.upper()}")
+
+                # Dù bài đã có trong SQLite, vẫn chạy ĐẦY ĐỦ: duyệt hết trang,
+                # đọc hết comment của chủ thớt, đếm media rồi mới quyết định có
+                # phải tải hay không. Trước đây chỉ cần thấy cache có là lướt qua,
+                # nên media thêm vào sau (hoặc post chủ thớt trả lời sau) bị bỏ sót
+                # mà không ai biết.
                 await self.crawl_thread(context, first_url, author)
             except asyncio.CancelledError:
                 ok = False
@@ -281,17 +288,40 @@ class CrawlerEngine:
                     return
 
                 title, date_prefix = X.thread_meta(soup)
+                # Ngày đã biết từ lần quét trước thì DÙNG LẠI. Nếu không, một lần
+                # server thiếu ngày (trang lỗi, theme khác) là folder đổi tên ->
+                # app coi là bài mới và tải lại toàn bộ dù file đã có.
+                thread_key = thread_url.split('?')[0].split('#')[0]
+                remembered = self.cache.thread_date(thread_key)
+                if remembered:
+                    if not date_prefix:
+                        date_prefix = remembered
+                        self.log(f"   [*] Dùng ngày đã lưu trong cache: {remembered}")
                 # Báo trước khi tải: 1 thread có thể mất cả chục giây vì file nặng,
                 # không có dòng này thì nhìn log tưởng app treo.
                 self.log(f"   [↓] Bài {idx}: {title[:60]}")
                 folder = X.thread_folder(self.download_dir, author, title, date_prefix)
+                if not date_prefix:
+                    self.log("   [!] Không xác định được ngày mở bài; dùng folder "
+                             "'khong-ngay' (sẽ ổn định cho các lần sau).")
                 os.makedirs(folder, exist_ok=True)
+                self.cache.remember_thread_date(thread_key, date_prefix, folder)
 
                 current = thread_url
                 visited = set()
                 seen_hashes = {}     # trùng media trong cùng thread -> clone, không tải lại
+                # Chỉ mục hash -> file đã có trong folder. Cần vì tên file có
+                # timestamp: nếu server lần này không trả giờ, tên đổi, và nếu
+                # không biết media đã có thì sẽ tạo thêm bản sao thứ hai.
+                folder_index = index_folder(folder)
                 pending = []         # tải chồng với việc bóc trang kế tiếp
                 img_idx = 0
+                # Đếm để báo cáo "đã thấy bao nhiêu / tải được bao nhiêu" thay vì
+                # im lặng bỏ qua khi mọi thứ đã có trong cache.
+                found_images = found_videos = found_files = 0
+                author_posts = 0
+                other_posts = 0
+                pages_done = 0
 
                 while current and not self.stop_event.is_set():
                     if current in visited:
@@ -299,22 +329,42 @@ class CrawlerEngine:
                         break
                     visited.add(current)
 
+                    # soup None = trang này tải hỏng. Bản cũ gọi soup.select() luôn
+                    # -> AttributeError -> nhảy ra except ngoài, bỏ dở cả thread VÀ
+                    # không chạy gather() nên mất luôn thống kê của các trang đã
+                    # xong. Giờ dừng vòng lặp nhưng vẫn báo cáo phần đã tải.
+                    if soup is None:
+                        self.log(f"   [!] Bỏ qua trang không tải được: {current[:60]}")
+                        break
+
                     posts = soup.select("article.message--post[data-author]")
                     if not posts:
                         break
+                    pages_done += 1
                     main_content = posts[0].get("data-content", "")
 
                     for post in posts:
                         if self.stop_event.is_set():
                             break
                         if post.get('data-author', '').strip().lower() != author_key:
+                            other_posts += 1
                             continue
+                        author_posts += 1
 
                         imgs, vids, files = X.extract_post_media(post, current)
                         if not (imgs or vids or files):
                             continue
                         ts = X.post_timestamp(post)
+                        if not ts:
+                            # Không xác định được giờ post: dùng nhãn ổn định thay
+                            # vì chuỗi rỗng. Tên file vẫn có hash nên không đè
+                            # nhau, và lần quét sau ra CÙNG tên -> khớp cache.
+                            ts = "khong-gio"
                         video_tag = 'main_video' if post.get("data-content", "") == main_content else 'comment_video'
+
+                        found_images += len(imgs)
+                        found_videos += len(vids)
+                        found_files += len(files)
 
                         jobs = []
                         if vids:
@@ -325,7 +375,8 @@ class CrawlerEngine:
                             img_idx += len(imgs)
                             jobs += plan_jobs(imgs, folder, ts, 'image', seq_start=img_idx - len(imgs) + 1)
 
-                        pending += await self.downloader.dispatch(context, jobs, current, seen_hashes)
+                        pending += await self.downloader.dispatch(
+                            context, jobs, current, seen_hashes, folder_index)
                         # Chặn `pending` phình to: thread 20 trang × 20 post × 20 ảnh
                         # sinh hàng nghìn task cùng sống. Chờ bớt khi vượt ngưỡng,
                         # rồi chỉ giữ lại các task còn chạy.
@@ -338,7 +389,12 @@ class CrawlerEngine:
                         soup = await self.refetch(page, current)
 
                 stats = await self.downloader.gather(pending)
-                self._report_thread(author, idx, stats)
+                self._report_thread(author, idx, stats, {
+                    "images": found_images, "videos": found_videos,
+                    "files": found_files, "author_posts": author_posts,
+                    "other_posts": other_posts, "pages": pages_done,
+                    "folder": folder,
+                })
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -346,12 +402,64 @@ class CrawlerEngine:
             finally:
                 await self.close_page(page)
 
-    def _report_thread(self, author, idx, stats):
-        failed = stats["failed"]
+    def _report_thread(self, author, idx, stats, found=None):
+        """Báo cáo kết quả một thread: đã thấy bao nhiêu, tải mới bao nhiêu.
+
+        Bản cũ chỉ nói "đã trùng khớp (SQLite Index Match)" khi không tải được
+        gì, nên người dùng không biết app đã thật sự quét hết comment của chủ
+        thớt hay chỉ lướt qua rồi bỏ. Giờ luôn in số post của chủ thớt đã đọc,
+        số media phát hiện, và số tệp có thật trên đĩa.
+        """
+        found = found or {}
+        failed = stats.get("failed", 0)
+        downloaded = stats.get("ok", 0)
+
+        seen_total = (found.get("images", 0) + found.get("videos", 0)
+                      + found.get("files", 0))
+        posts = found.get("author_posts", 0)
+        others = found.get("other_posts", 0)
+        pages = found.get("pages", 0)
+        folder = found.get("folder")
+
+        # Số tệp CÓ THẬT trên đĩa, không phải số dự kiến: đây là thứ người dùng
+        # quan tâm khi nghi ngờ app bỏ sót.
+        on_disk = -1
+        if folder:
+            try:
+                on_disk = len([f for f in os.listdir(folder)
+                               if os.path.isfile(os.path.join(folder, f))])
+            except OSError:
+                on_disk = -1
+
+        tail = []
+        if posts:
+            tail.append(f"{posts} bài của chủ thớt")
+        if others:
+            tail.append(f"{others} bài người khác bỏ qua")
+        if pages:
+            tail.append(f"{pages} trang")
+        ctx = f" [{', '.join(tail)}]" if tail else ""
+
         if failed:
             self.log(f"   [!] Cảnh báo: {failed} tệp lỗi đường truyền trong bài này.")
-        if stats["ok"]:
-            self.log(f"   [✓] {author.upper()}: Bài {idx} đồng bộ thành công "
-                     + count_files(stats))
-        elif failed == 0 and not self.stop_event.is_set():
-            self.log(f"   [•] {author.upper()}: Bài {idx} đã trùng khớp (SQLite Index Match).")
+        if downloaded:
+            self.log(f"   [✓] {author.upper()}: Bài {idx} tải mới "
+                     + count_files(stats) + ctx)
+        elif seen_total and not self.stop_event.is_set():
+            # ĐÃ QUÉT ĐẦY ĐỦ, chỉ là không có gì mới. Nói rõ ra thay vì "trùng khớp".
+            disk = f", trên đĩa có {on_disk} tệp" if on_disk >= 0 else ""
+            self.log(f"   [•] {author.upper()}: Bài {idx} đã có đủ "
+                     f"{seen_total} media{disk}{ctx} — không cần tải lại.")
+        elif not seen_total and not self.stop_event.is_set():
+            self.log(f"   [•] {author.upper()}: Bài {idx} không có media nào{ctx}.")
+        if on_disk >= 0 and seen_total and on_disk < seen_total and not downloaded:
+            # Cache nói "đã có" nhưng đĩa thiếu -> đây là dấu hiệu dữ liệu hỏng,
+            # phải cảnh báo chứ không im lặng coi là xong.
+            self.log(f"   [!] Đĩa chỉ có {on_disk}/{seen_total} tệp. Có thể file đã bị "
+                     f"xoá hoặc di chuyển; chạy lại để tải bù.")
+        elif on_disk > seen_total:
+            # Đĩa NHIỀU hơn số media phát hiện được: dấu hiệu của bản sao trùng từ
+            # các lần quét trước (tên file đổi vì timestamp khác). Không tự xoá,
+            # nhưng phải nói ra để người dùng biết mà dọn.
+            self.log(f"   [!] Trong folder có {on_disk} tệp nhưng bài chỉ có "
+                     f"{seen_total} media — có thể còn bản sao từ lần quét trước.")

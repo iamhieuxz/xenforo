@@ -23,6 +23,16 @@ class MediaCache:
                 downloaded_at TEXT
             )
         """)
+        # Ngày mở thread + folder đã dùng, để folder KHÔNG đổi tên giữa các lần
+        # quét khi server lần sau không trả ngày.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS thread_index (
+                thread_key TEXT PRIMARY KEY,
+                date_prefix TEXT,
+                folder TEXT,
+                updated_at TEXT
+            )
+        """)
         self.conn.commit()
 
     def record(self, url_hash, abs_path):
@@ -39,6 +49,33 @@ class MediaCache:
         if row and row[0] and os.path.isabs(row[0]) and os.path.exists(row[0]):
             return row[0]
         return None
+
+    # ---------- ngày mở thread ----------
+    def thread_date(self, thread_key):
+        """Ngày YYYY-MM-DD đã biết của thread, hoặc None."""
+        row = self.conn.execute(
+            "SELECT date_prefix FROM thread_index WHERE thread_key = ?", (thread_key,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def remember_thread_date(self, thread_key, date_prefix, folder=None):
+        """Ghi nhớ ngày + folder của thread.
+
+        Mục đích: XenForo có lúc không trả ngày (thiếu .p-description, trang lỗi,
+        theme khác). Không nhớ thì mỗi lần quét lại ra folder khác -> app coi là
+        bài mới và tải lại toàn bộ dù file đã nằm trên đĩa.
+        """
+        if not date_prefix and not folder:
+            return
+        self.conn.execute(
+            "INSERT INTO thread_index (thread_key, date_prefix, folder, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(thread_key) DO UPDATE SET "
+            "  date_prefix = COALESCE(NULLIF(excluded.date_prefix, ''), date_prefix), "
+            "  folder      = COALESCE(excluded.folder, folder), "
+            "  updated_at  = excluded.updated_at",
+            (thread_key, date_prefix or "", folder, datetime.now().isoformat()))
+        self.conn.commit()
 
     def close(self):
         try:

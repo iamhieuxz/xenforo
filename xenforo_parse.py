@@ -136,14 +136,89 @@ def _strip_junk(post):
             el.decompose()
 
 
-def post_timestamp(post):
-    t = post.select_one('header.message-attribution time.u-dt') or post.select_one('time.u-dt')
-    if t and t.get('data-time'):
+def _date_from_time_tag(tag):
+    """Lấy ngày từ một thẻ <time>. Thử data-time rồi tới thuộc tính datetime.
+
+    XenForo ghi ngày theo hai kiểu tuỳ theme/build: `data-time` (epoch giây) và
+    `datetime` (ISO 8601). Chỉ đọc `data-time` như bản cũ là bỏ sót khá nhiều.
+    """
+    if not tag:
+        return None
+    raw = tag.get('data-time')
+    if raw:
         try:
-            return datetime.fromtimestamp(int(t['data-time'])).strftime('%Y%m%d_%H%M%S')
-        except (ValueError, OSError, OverflowError):
+            return datetime.fromtimestamp(int(raw))
+        except (ValueError, OSError, OverflowError, TypeError):
             pass
-    return "00000000_000000"
+    iso = tag.get('datetime')
+    if iso:
+        try:
+            # '2023-11-14T22:13:20+0000' hoặc có dấu hai chấm ở offset
+            return datetime.fromisoformat(iso.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            try:
+                return datetime.strptime(iso[:19], '%Y-%m-%dT%H:%M:%S')
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def _date_from_meta(soup):
+    """Ngày từ thẻ meta chuẩn SEO. Nhiều XenForo có sẵn để chia sẻ Facebook."""
+    for prop, attr in (("article:published_time", "property"),
+                       ("article:published_time", "name"),
+                       ("og:article:published_time", "property")):
+        node = soup.find('meta', attrs={attr: prop})
+        if node and node.get('content'):
+            try:
+                return datetime.fromisoformat(node['content'].replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def thread_start_date(soup):
+    """Ngày mở thread, thử lần lượt mọi nguồn. Trả datetime hoặc None.
+
+    Thứ tự ưu tiên theo độ tin cậy: mô tả thread (ngày tác giả đăng) trước, rồi
+    meta SEO, rồi thẻ time đầu tiên trong bài. Bản cũ chỉ thử ĐÚNG một selector
+    `.p-description time.u-dt`; thiếu nó là ra 0000 và folder đổi tên giữa các
+    lần quét -> app tải lại toàn bộ dù file đã có.
+    """
+    t = soup.select_one('.p-description time.u-dt') \
+        or soup.select_one('.p-description time')
+    d = _date_from_time_tag(t)
+    if d:
+        return d
+
+    d = _date_from_meta(soup)
+    if d:
+        return d
+
+    for t in soup.select('time.u-dt')[:3]:
+        d = _date_from_time_tag(t)
+        if d:
+            return d
+    for t in soup.select('time[datetime]')[:3]:
+        d = _date_from_time_tag(t)
+        if d:
+            return d
+
+    return None
+
+
+def post_timestamp(post):
+    """Thời điểm post dạng YYYYMMDD_HHMMSS.
+
+    Không trả chuỗi 00000000 nữa khi thiếu ngày: trả chuỗi RỖNG để caller biết là
+    "không xác định" và tự quyết định (engine dùng nhãn khác cho trường hợp này).
+    Giữ hàm thuần: không đọc cache, không đụng mạng.
+    """
+    d = _date_from_time_tag(post.select_one('header.message-attribution time.u-dt')) \
+        or _date_from_time_tag(post.select_one('time.u-dt')) \
+        or _date_from_time_tag(post.select_one('header.message-attribution time')) \
+        or _date_from_time_tag(post.select_one('time[datetime]'))
+    return d.strftime('%Y%m%d_%H%M%S') if d else ""
 
 
 def extract_post_media(post, page_url):
@@ -233,7 +308,7 @@ def extract_post_media_copy(post, page_url):
 
 
 def thread_meta(soup):
-    """Trả về (tiêu đề đã làm sạch, tiền tố ngày YYYY-MM-DD)."""
+    """Trả về (tiêu đề đã làm sạch, tiền tố ngày YYYY-MM-DD hoặc "")."""
     title = "Untitled_Post"
     node = soup.find('h1', class_='p-title-value')
     if node:
@@ -243,18 +318,19 @@ def thread_meta(soup):
         title = clean_name(raw)
     title = title[:80].strip().rstrip('.')
 
-    date_prefix = "0000-00-00"
-    t = soup.select_one('.p-description time.u-dt') or soup.select_one('.p-description time')
-    if t and t.get('data-time'):
-        try:
-            date_prefix = datetime.fromtimestamp(int(t['data-time'])).strftime('%Y-%m-%d')
-        except (ValueError, OSError, OverflowError):
-            pass
-    return title, date_prefix
+    d = thread_start_date(soup)
+    return title, (d.strftime('%Y-%m-%d') if d else "")
 
 
 def thread_folder(base_dir, author, title, date_prefix):
-    return os.path.join(base_dir, clean_name(author), f"[{date_prefix}] {title}")
+    """Đường dẫn folder của một thread.
+
+    date_prefix rỗng thì KHÔNG ghi "[ ]" trơ: dùng nhãn "khong-ngay" để folder
+    vẫn ổn định qua các lần quét. Trước đây rỗng/0000 đều tạo tên khác nhau ở
+    mỗi lần chạy, làm app tưởng là bài mới và tải lại từ đầu.
+    """
+    stamp = clean_name(date_prefix) if date_prefix else "khong-ngay"
+    return os.path.join(base_dir, clean_name(author), f"[{stamp}] {title}")
 
 
 def next_page_url(soup, page_url):

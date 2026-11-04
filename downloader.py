@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import os
 import random
+import re
 import shutil
 
 import aiofiles
@@ -26,6 +27,31 @@ class _Timeout:
 
 
 _TIMEOUT = _Timeout()
+
+# Tên file do plan_jobs sinh ra luôn kết thúc bằng _<6 hex của url hash><ext>.
+# Dùng để dựng lại chỉ mục "hash -> file đã có" từ đĩa, không cần DB.
+_HASH_IN_NAME_RE = re.compile(r'_([0-9a-f]{6})\.[^.]*$', re.I)
+
+
+def index_folder(folder):
+    """Quét folder, trả về {6-hex hash: đường dẫn file}. Bỏ qua file lạ.
+
+    Mục đích: biết ngay media nào ĐÃ CÓ trên đĩa trước khi tải. Không có nó,
+    khi tên file đổi (server mất timestamp, đổi định dạng ngày) app tạo thêm bản
+    sao thứ hai cho cùng một media — đo được: 3 file thành 6 sau khi quét lại.
+    """
+    found = {}
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if not e.is_file():
+                    continue
+                m = _HASH_IN_NAME_RE.search(e.name)
+                if m:
+                    found.setdefault(m.group(1).lower(), e.path)
+    except OSError:
+        pass
+    return found
 
 
 def backoff_seconds(attempt, base=2.0, cap=30.0):
@@ -118,13 +144,18 @@ class Downloader:
         except Exception:
             return False
 
-    async def dispatch(self, context, jobs, referer_url, seen_hashes):
+    async def dispatch(self, context, jobs, referer_url, seen_hashes,
+                       folder_index=None):
         """Tạo task cho các job chưa có. seen_hashes: hash -> path ĐÃ TẢI XONG trong thread.
 
         Trùng hash trong cùng thread thì clone từ bản đầu, không tải lại.
         Chỉ ghi seen_hashes khi tải THÀNH CÔNG: bản cũ ghi path trước khi tải,
         nên một URL xuất hiện ở hai post mà lần đầu fail thì lần hai bị coi là
         "đã xử lý" -> media mất im lặng, không log, không đếm lỗi.
+
+        folder_index: {6-hex hash: file đã có trên đĩa} từ index_folder(). Có nó
+        thì media đã nằm trong folder (dù tên file khác) được coi là đã có, không
+        tạo bản sao thứ hai.
         """
         tasks = []
         for url, save_path, h, kind in jobs:
@@ -140,6 +171,16 @@ class Downloader:
             if os.path.exists(save_path):
                 seen_hashes[h] = save_path
                 continue
+
+            # Đã có trong folder dưới TÊN KHÁC (timestamp đổi giữa các lần quét)?
+            # Ghi vào seen_hashes để các post sau trong thread cũng khớp, nhưng
+            # KHÔNG tạo file mới: đó chính là nguồn gốc của việc nhân đôi file.
+            if folder_index is not None:
+                existing = folder_index.get(h[:6].lower())
+                if existing and os.path.exists(existing):
+                    seen_hashes[h] = existing
+                    continue
+
             cached = self.cache.path_for(h)
             if cached and self.clone_cached(cached, save_path):
                 seen_hashes[h] = save_path

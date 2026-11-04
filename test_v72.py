@@ -193,10 +193,412 @@ class TestAuthorAndMeta(unittest.TestCase):
         self.assertNotIn('Label', title)
         self.assertIn('Bai Hay', title)
 
-    def test_bad_timestamp_does_not_crash(self):
+    def test_bad_timestamp_returns_empty_not_zero(self):
+        """Không xác định được giờ thì trả "" để caller tự quyết định.
+
+        Bản cũ trả "00000000_000000" — nhìn như một giá trị hợp lệ nên không ai
+        biết là thiếu, và mọi post thiếu giờ dùng chung một tiền tố.
+        """
         s = soup_of('<article class="message--post" data-author="a">'
                     '<time class="u-dt" data-time="abc"></time></article>')
-        self.assertEqual(X.post_timestamp(s), "00000000_000000")
+        self.assertEqual(X.post_timestamp(s), "",
+                         "phải là chuỗi rỗng, không phải 00000000_000000")
+
+
+class TestFolderIndexPreventsDuplicates(unittest.TestCase):
+    """Quét lại khi tên file đổi KHÔNG được tạo bản sao thứ hai.
+
+    Bug thật đo được: lần 1 server có timestamp -> tên
+    `[20231115_051320]_media_001_a_0d27d9.jpg`. Lần 2 server mất timestamp ->
+    tên `[khong-gio]_media_001_a_0d27d9.jpg`. Hash giống nhưng tên khác, nên
+    `os.path.exists(save_path)` sai và cache clone ra file thứ hai: 3 -> 6 file.
+    """
+
+    def _make(self, urls, folder, ts):
+        return plan_jobs(urls, folder, ts, 'image')
+
+    def test_index_folder_finds_existing_files(self):
+        from downloader import index_folder
+        with tempfile.TemporaryDirectory() as d:
+            for name, data in (('[20231115_051320]_media_001_a_0d27d9.jpg', b'x'),
+                               ('[khong-gio]_media_002_b_3c0170.jpg', b'y')):
+                with open(os.path.join(d, name), 'wb') as f:
+                    f.write(data)
+            with open(os.path.join(d, 'readme.txt'), 'wb') as f:
+                f.write(b'z')
+            idx = index_folder(d)
+            self.assertIn('0d27d9', idx)
+            self.assertIn('3c0170', idx)
+            self.assertEqual(len(idx), 2, "file không đúng mẫu tên phải bị bỏ qua")
+
+    def test_index_on_missing_folder_is_empty(self):
+        from downloader import index_folder
+        self.assertEqual(index_folder(r'F:\khong\ton\tai\abc'), {})
+
+    def test_same_url_different_timestamp_yields_same_hash(self):
+        """Cùng URL phải cùng hash dù timestamp khác — đó là cơ sở để chống trùng."""
+        a = self._make(['http://x/m/a.jpg'], r'F:\f', '20231115_051320')[0]
+        b = self._make(['http://x/m/a.jpg'], r'F:\f', 'khong-gio')[0]
+        self.assertNotEqual(a[1], b[1], "tên file khác nhau (đúng như bug)")
+        self.assertEqual(a[2], b[2], "nhưng hash phải giống nhau")
+
+    def test_dispatch_skips_when_folder_index_has_hash(self):
+        """Đã có trong folder dưới tên khác -> không tạo task, không tạo file mới."""
+        import asyncio
+        from downloader import Downloader, index_folder
+
+        with tempfile.TemporaryDirectory() as d:
+            # File có sẵn với tên cũ
+            jobs_old = plan_jobs(['http://x/m/a.jpg'], d, '20231115_051320', 'image')
+            old_path = jobs_old[0][1]
+            with open(old_path, 'wb') as f:
+                f.write(b'x')
+            idx = index_folder(d)
+
+            # Lần này tên sẽ khác (timestamp khác)
+            jobs_new = plan_jobs(['http://x/m/a.jpg'], d, 'khong-gio', 'image')
+            new_path = jobs_new[0][1]
+            self.assertNotEqual(old_path, new_path)
+
+            class _NoStop:
+                @staticmethod
+                def is_set():
+                    return False
+
+            class _Cache:
+                @staticmethod
+                def path_for(h):
+                    return None
+
+                @staticmethod
+                def record(h, p):
+                    pass
+
+            class _Ctx:
+                class request:
+                    async def get(self, *a, **k):
+                        raise AssertionError("không được tải: file đã có rồi")
+
+            async def run():
+                dl = Downloader(cache=_Cache(), log=lambda *a, **k: None,
+                                stop_event=_NoStop(),
+                                semaphore=asyncio.Semaphore(2), db_lock=asyncio.Lock())
+                return await dl.dispatch(_Ctx(), jobs_new, 'http://ref', {}, idx)
+
+            tasks = asyncio.run(run())
+            self.assertEqual(tasks, [], "không được tạo task khi folder đã có hash")
+            self.assertFalse(os.path.exists(new_path), "không được tạo bản sao")
+            self.assertEqual(len(os.listdir(d)), 1, f"folder phải giữ 1 file: {os.listdir(d)}")
+
+
+class TestDetailedThreadReport(unittest.TestCase):
+    """Báo cáo phải nói rõ đã đọc bao nhiêu, thấy bao nhiêu, có bao nhiêu trên đĩa.
+
+    Bug cũ: khi mọi thứ đã có trong cache, app chỉ in "đã trùng khớp (SQLite
+    Index Match)" — người dùng không biết nó có thật sự quét hết comment của
+    chủ thớt hay chỉ lướt qua rồi bỏ.
+    """
+
+    def _report(self, stats, found):
+        import engine
+        logs = []
+        eng = engine.CrawlerEngine.__new__(engine.CrawlerEngine)
+        eng.log = lambda m, tag=None: logs.append(m)
+        eng.stop_event = type("E", (), {"is_set": staticmethod(lambda: False)})()
+        eng._report_thread("TACGIA", 1, stats, found)
+        return "\n".join(logs)
+
+    def test_reports_counts_not_just_match(self):
+        out = self._report({"ok": 0, "failed": 0, "image": 0, "video": 0, "file": 0},
+                           {"images": 5, "author_posts": 3, "other_posts": 4, "pages": 2})
+        self.assertIn("5 media", out)
+        self.assertIn("3 bài của chủ thớt", out)
+        self.assertIn("4 bài người khác bỏ qua", out)
+        self.assertIn("2 trang", out)
+        self.assertNotIn("trùng khớp", out,
+                         "không được dùng câu mơ hồ 'trùng khớp' nữa")
+
+    def test_reports_downloaded_count(self):
+        out = self._report({"ok": 3, "failed": 0, "image": 3, "video": 0, "file": 0},
+                           {"images": 3, "author_posts": 1})
+        self.assertIn("tải mới", out)
+        self.assertIn("3 ảnh", out)
+
+    def test_warns_when_disk_has_fewer_files(self):
+        """Cache nói có nhưng đĩa thiếu -> phải cảnh báo, không im lặng."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.jpg"), "wb") as f:
+                f.write(b"x")
+            out = self._report(
+                {"ok": 0, "failed": 0, "image": 0, "video": 0, "file": 0},
+                {"images": 5, "author_posts": 1, "folder": d})
+        self.assertIn("chỉ có 1/5", out)
+        self.assertIn("tải bù", out)
+
+    def test_reports_empty_thread(self):
+        out = self._report({"ok": 0, "failed": 0, "image": 0, "video": 0, "file": 0},
+                           {"images": 0, "author_posts": 2})
+        self.assertIn("không có media nào", out)
+
+    def test_reports_failures(self):
+        out = self._report({"ok": 0, "failed": 4, "image": 0, "video": 0, "file": 0},
+                           {"images": 4, "author_posts": 1})
+        self.assertIn("4 tệp lỗi", out)
+
+
+class TestEngineWiring(unittest.TestCase):
+    """Engine phải có cache và dùng index_folder — nếu không thì dedupe không chạy."""
+
+    def test_engine_keeps_cache_reference(self):
+        import threading
+        import engine
+        c = object()
+        e = engine.CrawlerEngine(cache=c, log=lambda *a, **k: None,
+                                 stop_event=threading.Event())
+        self.assertIs(e.cache, c, "engine phải giữ cache để tra thread_date")
+
+    def test_crawl_thread_indexes_folder(self):
+        import inspect
+        import engine
+        src = inspect.getsource(engine.CrawlerEngine.crawl_thread)
+        self.assertIn("index_folder", src, "phải quét folder trước khi tải")
+        self.assertIn("folder_index", src)
+
+    def test_dispatch_signature_accepts_folder_index(self):
+        import inspect
+        from downloader import Downloader
+        params = list(inspect.signature(Downloader.dispatch).parameters)
+        self.assertIn("folder_index", params)
+
+
+class TestRescanFullSweep(unittest.TestCase):
+    """Bài đã có trong SQL vẫn phải quét ĐẦY ĐỦ, không lướt qua.
+
+    Yêu cầu người dùng: paste lại link của bài đã tải, app phải kiểm tra số tệp
+    và quét cả comment của chủ thớt — không được "kiểm nhanh rồi bỏ qua". Nếu chỉ
+    thấy cache có là dừng, media thêm sau sẽ bị bỏ sót vĩnh viễn.
+    """
+
+    def _thread_html(self, n_comments, date=True):
+        head = ('<div class="p-description"><time class="u-dt" data-time="1700000000">'
+                '</time></div>') if date else ''
+        posts = ['<article class="message--post" data-author="tacgia" data-content="main">'
+                 '<div class="message-body"><img src="/m/main1.jpg">'
+                 '<img src="/m/main2.jpg"></div>'
+                 '<header class="message-attribution">'
+                 '<time class="u-dt" data-time="1700000000"></time></header></article>']
+        for i in range(n_comments):
+            posts.append(
+                f'<article class="message--post" data-author="tacgia" data-content="c{i}">'
+                f'<div class="message-body"><img src="/m/c{i}.jpg"></div>'
+                f'<header class="message-attribution">'
+                f'<time class="u-dt" data-time="{1700000100 + i}"></time></header></article>')
+        posts.append('<article class="message--post" data-author="nguoikhac">'
+                     '<div class="message-body"><img src="/m/khonglay.jpg"></div></article>')
+        return (f'<html><body>{head}<h1 class="p-title-value">Bai Test</h1>'
+                f'{"".join(posts)}</body></html>')
+
+    def _run(self, htmls):
+        """Chạy crawl_thread cho từng html, trả (số file mỗi lần, log mỗi lần)."""
+        import asyncio
+        import engine
+        from cache import MediaCache
+
+        tmp = tempfile.mkdtemp(prefix="sweep")
+        real = config.DOWNLOAD_DIR
+        config.DOWNLOAD_DIR = tmp
+        try:
+            class _Page:
+                def __init__(self, h):
+                    self.h = h
+
+                async def goto(self, *a, **k):
+                    pass
+
+                async def wait_for_timeout(self, *a):
+                    pass
+
+                async def content(self):
+                    return self.h
+
+                async def close(self):
+                    pass
+
+            class _Ctx:
+                def __init__(self, h):
+                    self.h = h
+                    self.request = self
+
+                async def new_page(self):
+                    return _Page(self.h)
+
+                async def get(self, url, headers=None, timeout=None):
+                    class R:
+                        status = 200
+                        headers = {"content-type": "image/jpeg", "content-length": "10"}
+
+                        async def body(self):
+                            return b"0123456789"
+
+                        async def dispose(self):
+                            pass
+                    return R()
+
+            class _NoStop:
+                @staticmethod
+                def is_set():
+                    return False
+
+            async def run():
+                cache = MediaCache(os.path.join(tmp, "c.db"))
+                logs = []
+                eng = engine.CrawlerEngine(cache=cache, log=lambda m, t=None: logs.append(m),
+                                           stop_event=_NoStop(), download_dir=tmp)
+                async def connect(p):
+                    return ctx
+                eng.connect = connect
+                counts = []
+                for h in htmls:
+                    ctx = _Ctx(h)
+                    logs.clear()
+                    await eng.crawl_thread(ctx, "https://r/threads/x.1/", "tacgia")
+                    folder = None
+                    for u in os.listdir(tmp):
+                        p = os.path.join(tmp, u)
+                        if os.path.isdir(p):
+                            for f in os.listdir(p):
+                                folder = os.path.join(p, f)
+                    counts.append((len(os.listdir(folder)) if folder else 0,
+                                   "\n".join(logs)))
+                cache.close()
+                return counts
+
+            return asyncio.run(run())
+        finally:
+            config.DOWNLOAD_DIR = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_new_comments_are_downloaded_on_rescan(self):
+        """Chủ thớt trả lời thêm sau lần quét đầu -> phải tải phần mới."""
+        counts = self._run([self._thread_html(3), self._thread_html(5)]) 
+        self.assertEqual(counts[0][0], 5, f"lần 1 phải có 5 tệp: {counts[0][1]}")
+        self.assertEqual(counts[1][0], 7,
+                         f"lần 2 phải thêm 2 tệp -> 7, không được bỏ qua: {counts[1][1]}")
+
+    def test_rescan_without_changes_downloads_nothing(self):
+        counts = self._run([self._thread_html(3), self._thread_html(3)])
+        self.assertEqual(counts[0][0], 5)
+        self.assertEqual(counts[1][0], 5, "không có gì mới thì không tải thêm")
+
+    def test_rescan_reports_counts_even_when_skipping(self):
+        """Khi không tải gì, vẫn phải báo đã đọc bao nhiêu post/media."""
+        counts = self._run([self._thread_html(3), self._thread_html(3)])
+        second = counts[1][1]
+        self.assertIn("5 media", second, f"phải báo số media: {second}")
+        self.assertIn("bài của chủ thớt", second)
+        self.assertNotIn("trùng khớp", second)
+
+    def test_other_authors_media_never_downloaded(self):
+        counts = self._run([self._thread_html(0)])
+        self.assertEqual(counts[0][0], 2, "chỉ media của chủ thớt: 2 ảnh")
+        self.assertIn("1 bài người khác bỏ qua", counts[0][1])
+
+
+class TestThreadDateFallbacks(unittest.TestCase):
+    """Ngày mở thread phải tìm được ở nhiều nguồn, không chỉ một selector.
+
+    Bug thật: `thread_meta` chỉ thử `.p-description time.u-dt`. Server không trả
+    thẻ đó là ra "0000-00-00", folder thành "[0000-00-00] ...", và vì tên folder
+    khác nhau giữa các lần quét nên app coi là bài mới -> tải lại toàn bộ dù file
+    đã nằm trên đĩa. Trên đĩa thật đã đo được: 11/11 folder đều là [0000-00-00].
+    """
+
+    def _meta(self, html):
+        return X.thread_meta(soup_of(html))
+
+    def test_primary_source_still_wins(self):
+        html = ('<div class="p-description"><time class="u-dt" data-time="1700000000">'
+                '</time></div><h1 class="p-title-value">A</h1>')
+        self.assertEqual(self._meta(html)[1], '2023-11-15')
+
+    def test_falls_back_to_time_in_post(self):
+        """Thiếu .p-description nhưng post có <time> -> phải lấy được ngày."""
+        html = ('<h1 class="p-title-value">A</h1>'
+                '<article class="message--post" data-author="a">'
+                '<header class="message-attribution">'
+                '<time class="u-dt" data-time="1700000000"></time></header></article>')
+        self.assertEqual(self._meta(html)[1], '2023-11-15',
+                         "không được ra 0000-00-00 khi vẫn còn nguồn khác")
+
+    def test_falls_back_to_meta_tag(self):
+        html = ('<html><head><meta property="article:published_time" '
+                'content="2023-11-14T22:13:20+00:00"></head><body>'
+                '<h1 class="p-title-value">A</h1></body></html>')
+        self.assertEqual(self._meta(html)[1], '2023-11-14')
+
+    def test_falls_back_to_datetime_attribute(self):
+        """XenForo có build dùng `datetime` ISO thay vì `data-time` epoch."""
+        html = ('<h1 class="p-title-value">A</h1>'
+                '<div class="p-description">'
+                '<time datetime="2023-11-14T22:13:20+0000"></time></div>')
+        self.assertEqual(self._meta(html)[1], '2023-11-14')
+
+    def test_no_source_at_all_gives_stable_label(self):
+        """Không có nguồn nào: phải là nhãn ỔN ĐỊNH, không phải 0000 cũng không rỗng."""
+        html = '<h1 class="p-title-value">A</h1>'
+        date_prefix = self._meta(html)[1]
+        self.assertEqual(date_prefix, "", "không có ngày thì trả rỗng")
+        folder = X.thread_folder(r'F:\base', 'u', 'A', date_prefix)
+        self.assertIn('khong-ngay', folder)
+        self.assertNotIn('0000', folder)
+        # Gọi lại phải ra y hệt -> folder không đổi tên giữa các lần quét.
+        self.assertEqual(folder, X.thread_folder(r'F:\base', 'u', 'A', self._meta(html)[1]))
+
+    def test_zero_date_never_appears(self):
+        for html in ('<h1 class="p-title-value">A</h1>',
+                     '<div class="p-description"><time>?</time></div>'
+                     '<h1 class="p-title-value">A</h1>'):
+            self.assertNotIn('0000', self._meta(html)[1],
+                             f"không được sinh ra 0000: {html[:40]}")
+
+
+class TestThreadDateIsRemembered(unittest.TestCase):
+    """Ngày đã biết phải được lưu lại, để folder không đổi khi server quên ngày."""
+
+    def test_remember_then_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = MediaCache(os.path.join(d, 'c.db'))
+            self.assertIsNone(c.thread_date('thread-1'))
+            c.remember_thread_date('thread-1', '2023-11-15', r'F:\base\u\[2023-11-15] A')
+            self.assertEqual(c.thread_date('thread-1'), '2023-11-15')
+            c.close()
+
+    def test_empty_date_does_not_overwrite_known_date(self):
+        """Lần quét sau server không trả ngày -> KHÔNG được xoá ngày đã biết."""
+        with tempfile.TemporaryDirectory() as d:
+            c = MediaCache(os.path.join(d, 'c.db'))
+            c.remember_thread_date('t', '2023-11-15', 'folder1')
+            c.remember_thread_date('t', '', 'folder1')
+            self.assertEqual(c.thread_date('t'), '2023-11-15',
+                             "ngày đã biết không được bị ghi đè bằng rỗng")
+            c.close()
+
+    def test_new_date_does_update(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = MediaCache(os.path.join(d, 'c.db'))
+            c.remember_thread_date('t', '2023-11-15', 'f')
+            c.remember_thread_date('t', '2024-01-02', 'f')
+            self.assertEqual(c.thread_date('t'), '2024-01-02')
+            c.close()
+
+    def test_remember_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = MediaCache(os.path.join(d, 'c.db'))
+            for _ in range(3):
+                c.remember_thread_date('t', '2023-11-15', 'f')
+            rows = c.conn.execute("SELECT COUNT(*) FROM thread_index").fetchone()[0]
+            self.assertEqual(rows, 1, "phải upsert, không tạo nhiều dòng")
+            c.close()
 
 
 class TestMediaCache(unittest.TestCase):

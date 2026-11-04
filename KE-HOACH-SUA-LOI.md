@@ -4,8 +4,8 @@
 > Quy tắc làm việc: **mỗi bước một commit**, chạy `python audit_repro.py` + `python -m unittest test_v72`
 > trước và sau khi sửa. Chỉ tick khi có bằng chứng cụ thể ở cột "Bằng chứng".
 
-**Điểm hiện tại: 88/100** (gốc 64 → P0 78 → P1 86 → P2/P3 88). **117 test xanh.**
-Tất cả 15 bước đã hoàn tất.
+**Điểm hiện tại: 91/100** (gốc 64 → P0 78 → P1 86 → P2/P3 88 → 91). **143 test xanh.**
+Tất cả 17 bước đã hoàn tất.
 
 ---
 
@@ -28,6 +28,8 @@ Tất cả 15 bước đã hoàn tất.
 | 12 | H4 — streaming download (một phần) | 🟠 | P2 | [x] |
 | 13 | N1/N2/N3 — tài liệu & backoff | 🟢 | P3 | [x] |
 | 14 | Đóng app giữa lúc quét (phát sinh) | 🟠 | P1 | [x] |
+| 15 | Ngày mở bài ra 0000 (phát sinh) | 🔴 | P0 | [x] |
+| 16 | Quét lại đầy đủ + báo cáo số tệp | 🔴 | P0 | [x] |
 
 ---
 
@@ -595,6 +597,98 @@ lọt.
 | 2026-11-05 | 12 | H4 một phần | Playwright không có streaming; 2 chốt thay thế; +6 test → 98 |
 | 2026-11-05 | 13 | N1–N3 xong | backoff jitter, COCOC_PATH thật, đĩa, docstring; +14 test → 112 |
 | 2026-11-05 | 14 | đóng app (phát sinh) | `WM_DELETE_WINDOW` → `on_close`; +5 test → 117 |
+| 2026-11-05 | 15 | ngày mở bài (phát sinh) | chuỗi fallback nhiều nguồn + `thread_index`; +10 test → 127 |
+| 2026-11-05 | 16 | quét lại đầy đủ | chống trùng file, báo cáo chi tiết; +16 test → 143 |
+
+---
+
+## Bước 15 (phát sinh) — ngày mở bài ra `0000-00-00`
+
+**Người dùng báo:** folder bị `[0000-00-00]` ở trước, và dù file đã có sẵn,
+bài vẫn bị cào lại lần nữa.
+
+**Đo trên đĩa thật trước khi sửa:**
+
+```
+Tổng số folder bài viết : 11
+Folder có 0000-00-00    : 11        <- 100%
+File trong mỗi folder   : 0 (file nằm rời ở cấp user, tên [00000000_000000]_...)
+```
+
+**Nguyên nhân kép:**
+
+1. `thread_meta()` chỉ thử **đúng một** selector `.p-description time.u-dt`.
+   Server không trả thẻ đó (theme khác, trang lỗi) là ra `0000-00-00`.
+2. Vì tiền tố ngày nằm trong **tên folder**, mà tên folder lại dùng để dựng
+   `save_path`, nên mỗi lần ngày khác đi là toàn bộ đường dẫn khác đi. Cache tra
+   theo `save_path` -> trượt -> tải lại từ đầu dù file đã nằm trên đĩa.
+
+**Đã sửa:**
+
+- [x] 15.1 `thread_start_date()`: chuỗi fallback 4 nguồn — `.p-description time`
+      → `meta[article:published_time]` → `time.u-dt` bất kỳ → `time[datetime]`
+- [x] 15.2 Đọc cả `datetime` ISO lẫn `data-time` epoch (XenForo có cả hai kiểu)
+- [x] 15.3 `post_timestamp()` trả `""` thay vì `00000000_000000`
+- [x] 15.4 Bảng `thread_index` trong SQLite: nhớ ngày + folder của từng thread
+- [x] 15.5 `thread_folder()`: ngày rỗng dùng nhãn `khong-ngay` (ổn định)
+- [x] 15.6 Engine dùng lại ngày đã lưu khi server quên ngày
+
+**Bằng chứng:**
+
+```
+A. Có .p-description time       -> 2023-11-15   (giữ nguyên)
+B. Chỉ có time trong post       -> 2023-11-15   (trước: 0000-00-00)
+C. Không có thẻ time nào        -> ''  -> folder [khong-ngay]  (ổn định)
+D. Chỉ có meta published_time   -> 2023-11-14   (trước: 0000-00-00)
+```
+
+---
+
+## Bước 16 (phát sinh) — quét lại phải đầy đủ, không lướt qua
+
+**Người dùng báo:** bài đã có trong SQL nhưng vẫn paste link để quét; phải kiểm
+tra số tệp và quét cả comment của chủ thớt, không phải kiểm nhanh rồi bỏ qua.
+
+**Ba lỗi thật tìm được khi kiểm chứng:**
+
+| # | Lỗi | Đo được |
+|---|---|---|
+| 1 | `CrawlerEngine` không lưu `cache` -> `thread_index` không dùng được | `AttributeError: no attribute 'cache'` |
+| 2 | Tên file đổi khi server mất timestamp -> tạo bản sao thứ hai | 3 file -> **6 file** |
+| 3 | `soup is None` (trang 2 lỗi) -> `AttributeError` -> mất cả thread + mất thống kê | cả thread bỏ dở |
+
+**Đã sửa:**
+
+- [x] 16.1 `index_folder()`: dựng `{hash: file}` từ đĩa, không cần DB
+- [x] 16.2 `dispatch(..., folder_index)`: hash đã có trong folder -> không tạo bản sao
+- [x] 16.3 `_report_thread()`: báo số post chủ thớt / post bỏ qua / số trang / media / tệp trên đĩa
+- [x] 16.4 Cảnh báo khi đĩa **thiếu** tệp ("chạy lại để tải bù")
+- [x] 16.5 Cảnh báo khi đĩa **nhiều** hơn ("có thể còn bản sao từ lần quét trước")
+- [x] 16.6 Trang lỗi (`soup is None`) chỉ dừng vòng lặp, vẫn báo cáo phần đã tải
+
+**Bằng chứng end-to-end** (đúng kịch bản người dùng mô tả):
+
+```
+LAN 1: 2 media chính + 3 comment của chủ thớt
+  [✓] Bài 1 tải mới 5 ảnh [4 bài của chủ thớt, 1 bài người khác bỏ qua, 1 trang]
+  -> 5 file
+
+LAN 2: chủ thớt trả lời thêm 2 comment (bài đã có trong SQL)
+  [✓] Bài 1 tải mới 2 ảnh [6 bài của chủ thớt, 1 bài người khác bỏ qua, 1 trang]
+  -> 7 file          <- tải bù đúng 2 tệp mới, không bỏ qua
+
+LAN 3: không có gì mới
+  [•] Bài 1 đã có đủ 7 media, trên đĩa có 7 tệp [...] — không cần tải lại.
+  -> 7 file          <- không nhân đôi, không tải lại
+```
+
+**Về câu "kiểm nhanh rồi bỏ qua":** đọc code thì `crawl_link` **không** có nhánh
+bỏ qua sớm — nó luôn gọi `crawl_thread` và luôn duyệt hết trang. Cái tạo cảm
+giác "bỏ qua" là **báo cáo**: khi mọi thứ đã có trong cache, app chỉ in một dòng
+`[•] ... đã trùng khớp (SQLite Index Match)` — không nói đã đọc bao nhiêu bài,
+thấy bao nhiêu media, trên đĩa có bao nhiêu tệp. Không thể phân biệt "đã quét
+đầy đủ và không có gì mới" với "lướt qua rồi bỏ". Đã sửa bằng báo cáo chi tiết,
+và thêm test khoá hành vi này lại.
 
 ## Trạng thái kiểm chứng cuối
 

@@ -107,7 +107,7 @@ xenforo/
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
 ├── browser_launcher.py# Tự mở trình duyệt ở cổng CDP 9222
 ├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 112 test
+├── test_v72.py        # 143 test
 ├── _check_palette.py  # Self-check tương phản WCAG cho cả hai bảng màu
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
 ```
@@ -193,7 +193,7 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 python -m unittest test_v72
 ```
 
-112 test, chạy khoảng 5 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
+143 test, chạy khoảng 6 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
 
 Test **hermetic**: `setUpModule` trỏ `config.DOWNLOAD_DIR` và biến
 `RPHANG_DIR` về thư mục tạm, nên suite không mở và không ghi
@@ -246,3 +246,19 @@ Khi Cốc Cốc đã chạy, nó bỏ qua cờ debug và chỉ mở tab. Đóng 
 - Media chỉ lấy từ nội dung bài viết. Ảnh trong avatar, chữ ký cuối bài và thanh cảm xúc bị loại có chủ đích.
 - Một thread nhiều trang được app bấm "Trang sau" để lấy hết, nhưng mỗi trang phải render xong mới sang trang kế tiếp nên thread dài sẽ chậm.
 - `xenforo_parse.extract_post_media()` **sửa** cây soup truyền vào (gỡ quote/quảng cáo bằng `decompose()`). Cần bản không sửa input thì dùng `extract_post_media_copy()`.
+- Folder của một bài được đặt theo ngày mở thread. Nếu server không trả ngày ở bất kỳ nguồn nào, folder dùng nhãn `[khong-ngay]` — **ổn định giữa các lần quét**, không đổi tên. Ngày đã biết được lưu trong bảng `thread_index` của SQLite và dùng lại cho các lần sau.
+
+## Quét lại một bài đã có
+
+Dán link và bấm **Quét 1 Thớt** — kể cả khi bài đã tải trước đó, app **luôn chạy đầy đủ**: duyệt hết các trang, đọc hết comment của chủ thớt, đếm media, rồi mới quyết định tải gì. Nó không lướt qua dựa trên việc "đã có trong SQLite".
+
+Nhật ký luôn nói rõ đã làm gì:
+
+```
+[✓] TACGIA: Bài 1 tải mới 2 ảnh [6 bài của chủ thớt, 1 bài người khác bỏ qua, 1 trang]
+[•] TACGIA: Bài 1 đã có đủ 7 media, trên đĩa có 7 tệp [...] — không cần tải lại.
+[!] Đĩa chỉ có 3/7 tệp. Có thể file đã bị xoá hoặc di chuyển; chạy lại để tải bù.
+[!] Trong folder có 9 tệp nhưng bài chỉ có 7 media — có thể còn bản sao từ lần quét trước.
+```
+
+Hai dòng cảnh báo cuối là điểm khác biệt so với bản cũ: trước đây nếu cache nói "đã có" thì app im lặng bỏ qua, kể cả khi file trên đĩa đã bị xoá.
