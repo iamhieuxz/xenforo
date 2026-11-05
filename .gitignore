@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 tmpixxgnbw4
 _o.txt
+pip-unpack-*/
+*.whl
