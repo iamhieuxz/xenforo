@@ -191,9 +191,27 @@ class CrawlWorker(QThread):
 class CrawlerInterface(QWidget):
     """Giao diện chính điều khiển quét XenForo."""
 
+    # Trần độ dài nhật ký (tính bằng KÝ TỰ, không phải block).
+    #
+    # Vì sao đo bằng ký tự: ta chèn mỗi dòng log bằng insertHtml, không tạo
+    # paragraph mới, nên document().blockCount() luôn = 1 và không dùng làm
+    # ngưỡng được.
+    #
+    # Vì sao 20.000: chi phí mỗi dòng của QTextEdit tỉ lệ với độ dài tài liệu.
+    # Đo được (ms/dòng khi nhật ký đã đầy):
+    #     ngưỡng  20.000 ký tự -> 0,29 ms/dòng
+    #     ngưỡng  40.000        -> 0,55
+    #     ngưỡng  80.000        -> 1,09
+    #     ngưỡng 120.000        -> 1,71
+    # Quét một thread sinh vài trăm dòng log; để trần 120k là tự làm chậm gần
+    # 6 lần so với cần thiết. 20.000 ký tự ≈ 200 dòng — vẫn đọc lại được.
+    LOG_MAX_CHARS = 20_000
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent
+        # Cho biet dang gom log va chua ve lai (xem append_log).
+        self._flush_pending = False
         self._init_ui()
 
     def _init_ui(self):
@@ -387,12 +405,69 @@ class CrawlerInterface(QWidget):
         self.log_edit.moveCursor(QTextCursor.End)
 
     def append_log(self, message: str, tag: str):
-        cursor = self.log_edit.textCursor()
-        cursor.movePosition(QTextCursor.End)
+        """Thêm một dòng vào nhật ký.
+
+        Hai chi phí ẩn ở đây, cả hai đều là nguyên nhân "chạy xong vẫn lag":
+
+        1. QTextEdit layout lại tài liệu khi nội dung đổi. Đo được chi phí mỗi
+           dòng tăng từ 0,12 ms (nhật ký ngắn) lên 2,0 ms (nhật ký dài) — tức
+           chỉ 2.000 dòng log mất gần 4 giây.
+        2. Gọi setHtml/insertHtml cho từng dòng khi widget đang hiển thị khiến
+           Qt xếp lịch vẽ lại sau mỗi lần.
+
+        Cách chặn: tắt updates của widget trong lúc ghi, chỉ bật lại theo nhịp
+        (dùng QTimer) để không vẽ lại N lần cho N dòng.
+        """
         keyword = self.filter_edit.text().strip().lower()
-        if not keyword or keyword in message.lower():
+        if keyword and keyword not in message.lower():
+            return
+
+        # Chỉ cập nhật khi widget đang hiển thị; khi tab khác đang mở thì để
+        # Qt tự vẽ lúc được hiện ra.
+        self.log_edit.setUpdatesEnabled(False)
+        try:
+            cursor = QTextCursor(self.log_edit.document())
+            cursor.movePosition(QTextCursor.End)
             self._append_formatted(message, tag, cursor)
-            self.log_edit.moveCursor(QTextCursor.End)
+            self._trim_log()
+        finally:
+            if not self._flush_pending:
+                self._flush_pending = True
+                # Gom nhiều dòng vào một lần vẽ thay vì vẽ từng dòng.
+                QTimer.singleShot(80, self._flush_log)
+
+    def _flush_log(self):
+        self._flush_pending = False
+        self.log_edit.setUpdatesEnabled(True)
+        self.log_edit.moveCursor(QTextCursor.End)
+
+    def _trim_log(self):
+        """Giữ độ dài nhật ký ở mức giới hạn.
+
+        NGUYÊN NHÂN LAG CHÍNH. QTextEdit phải layout lại toàn bộ tài liệu mỗi
+        lần vẽ, và chi phí đó tăng theo độ dài văn bản. Một phiên quét dài sinh
+        hàng chục nghìn dòng; giữ hết thì mỗi dòng log mới càng lúc càng chậm,
+        và sau khi quét xong widget vẫn phải vẽ khối đó mỗi lần cuộn.
+
+        Đo được: khi chỉ kiểm theo document().blockCount() thì ngưỡng không bao
+        giờ chạm tới, vì ta chèn HTML block mà không tạo paragraph mới
+        (blockCount luôn = 1). Vì vậy ở đây đo bằng SỐ KÝ TỰ.
+
+        QTextEdit không có setMaximumBlockCount như QPlainTextEdit, nên phải
+        cắt tay từ đầu tài liệu.
+        """
+        doc = self.log_edit.document()
+        total = doc.characterCount()
+        if total <= self.LOG_MAX_CHARS:
+            return
+
+        # Cắt về 80% ngưỡng để không phải cắt lại ở dòng kế tiếp.
+        cut_to = int(self.LOG_MAX_CHARS * 0.8)
+        excess = total - cut_to
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.Start)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, excess)
+        cur.removeSelectedText()
 
     def _append_formatted(self, message: str, tag: str, cursor: QTextCursor):
         colors = LOG_COLORS_DARK if isDarkTheme() else LOG_COLORS_LIGHT
@@ -492,7 +567,7 @@ class SettingsInterface(QWidget):
             content=self._session_summary(),
             parent=group_session
         )
-        self.card_login.clicked.connect(self._open_login_window)
+        self.card_login.clicked.connect(lambda: self._open_login_window())
         group_session.addSettingCard(self.card_login)
         layout.addWidget(group_session)
 
@@ -566,15 +641,16 @@ class SettingsInterface(QWidget):
         except Exception:
             return "Chưa cấu hình phiên đăng nhập."
 
-    def _open_login_window(self):
+    def _open_login_window(self, wait_for_login=False):
         """Mở trình duyệt CÓ CỬA SỔ để người dùng đăng nhập.
 
         Đây là điểm mấu chốt của mode persistent: mở bằng cùng `user_data_dir`
         với lúc quét, nên cookie đăng nhập nằm đúng chỗ và các phiên sau tự
         dùng lại — không cần đăng nhập lại.
 
-        Phải kiểm tra trước: nếu trình duyệt của profile đó đang chạy thì
-        Chromium giữ khoá ProcessSingleton và tiến trình mới thoát ngay.
+        wait_for_login=True: sau khi mở, theo dõi file Cookies. Khi thấy
+        `xf_user` xuất hiện (người dùng đăng nhập xong và đóng trình duyệt),
+        báo để họ bấm Quét lại.
         """
         browser = (config.SESSION_BROWSER or "chrome").lower()
         exe = browser_launcher.find_browser_for(browser)
@@ -612,7 +688,8 @@ class SettingsInterface(QWidget):
                 args += list(getattr(config, "SESSION_EXTRA_ARGS", []) or [])
                 # KHÔNG headless: người dùng cần thấy cửa sổ để đăng nhập.
                 proc = subprocess.Popen(args)
-                QTimer.singleShot(0, lambda: self._on_login_opened(browser, prof))
+                QTimer.singleShot(
+                    0, lambda: self._on_login_opened(browser, prof, wait_for_login))
             except Exception as e:
                 QTimer.singleShot(0, lambda: InfoBar.error(
                     title="Không mở được",
@@ -621,13 +698,47 @@ class SettingsInterface(QWidget):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_login_opened(self, browser, prof):
+    def _on_login_opened(self, browser, prof, wait_for_login=False):
         InfoBar.success(
-            title="Đã mở trình duyệt",
+            title="Đã mở trình duyệt để đăng nhập",
             content="Hãy đăng nhập vào diễn đàn trong cửa sổ vừa mở, rồi ĐÓNG nó. "
-                    "Phiên sẽ được dùng lại ở các lần quét sau.",
+                    "App sẽ tự phát hiện và cho phép quét ẩn.",
             parent=self, position=InfoBarPosition.TOP_RIGHT, duration=12000)
         self.card_login.setContent(self._session_summary())
+
+        if wait_for_login:
+            self._start_login_watch(browser, prof)
+
+    def _start_login_watch(self, browser, prof, interval_ms=2000):
+        """Theo dõi profile cho tới khi thấy cookie đăng nhập.
+
+        Vì sao cần: người dùng đăng nhập xong rồi đóng trình duyệt, nhưng app
+        không tự biết. Không theo dõi thì họ phải tự bấm Quét lại và đoán xem
+        đã được chưa. Ở đây app kiểm file Cookies định kỳ (chỉ đọc được khi
+        trình duyệt đã đóng) và báo ngay khi xong.
+        """
+        state = {"timer": None}
+
+        def tick():
+            need, why = session_source.needs_first_login(prof)
+            if not need:
+                if state["timer"] is not None:
+                    state["timer"].stop()
+                self.append_log("[✓] Đã phát hiện phiên đăng nhập. "
+                                "Giờ có thể quét ẩn.", "success")
+                InfoBar.success(
+                    title="Đã đăng nhập",
+                    content="Phiên đã lưu. Bấm Quét để bắt đầu.",
+                    parent=self, position=InfoBarPosition.TOP_RIGHT, duration=8000)
+                self.card_login.setContent(self._session_summary())
+                return
+            # Trình duyệt còn mở thì chưa đọc được cookie — tiếp tục chờ.
+
+        timer = QTimer(self)
+        timer.setInterval(interval_ms)
+        timer.timeout.connect(tick)
+        timer.start()
+        state["timer"] = timer
 
     def _launch_browser(self):
         """Mở/chẩn đoán cổng CDP từ trang Cài đặt.
@@ -852,7 +963,6 @@ class MainWindow(MSFluentWindow):
         if len(self.log_history) > 1500:
             self.log_history = self.log_history[-1500:]
         self.crawler_interface.append_log(message, tag)
-
     def _theme_file_path(self) -> str:
         candidates = [
             os.path.join(os.path.expanduser("~"), ".xenforo_theme"),
@@ -905,6 +1015,8 @@ class MainWindow(MSFluentWindow):
                 duration=3500
             )
             return
+        if not self._ensure_login():
+            return
         self._launch(lambda eng: eng.crawl_users([user], box_url), f"Tác giả: {user.upper()}")
 
     def start_thread_crawl(self):
@@ -919,6 +1031,8 @@ class MainWindow(MSFluentWindow):
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=3500
             )
+            return
+        if not self._ensure_login():
             return
         self._launch(lambda eng: eng.crawl_link(thread_url), "Bài viết đơn")
 
@@ -935,6 +1049,8 @@ class MainWindow(MSFluentWindow):
                 duration=3500
             )
             return
+        if not self._ensure_login():
+            return
         self.local_users.refresh(self.download_dir)
         users = self.local_users.names()
         if not users:
@@ -949,6 +1065,32 @@ class MainWindow(MSFluentWindow):
         self.crawler_interface.refresh_user_dropdown()
         self.append_log(f"\n[*] Tìm thấy {len(users)} tác giả local. Đồng bộ đa luồng...", "bulk")
         self._launch(lambda eng: eng.crawl_users(users, box_url), f"Toàn bộ ({len(users)} tác giả)")
+
+    def _ensure_login(self) -> bool:
+        """Bảo đảm đã có phiên đăng nhập TRƯỚC khi chạy ẩn.
+
+        Vì sao cần: chế độ quét chạy ẩn (headless). Nếu chưa đăng nhập, mọi
+        request vào box riêng bị XenForo chuyển về trang login, và app tải về
+        HTML của trang đăng nhập thay vì media — rất nặng và không có kết quả.
+        Người dùng không thấy gì vì chạy ẩn, nên phải chặn từ đầu.
+
+        Trả True nếu được phép quét (đã có session, hoặc đã đăng nhập xong).
+        """
+        browser = (config.SESSION_BROWSER or "chrome").lower()
+        profile = session_source.resolve_profile(browser)
+        need, why = session_source.needs_first_login(profile)
+        if not need:
+            return True
+
+        self.append_log(f"[!] {why}", "summary")
+        self.append_log("[*] Mở trình duyệt để bạn đăng nhập. Cửa sổ này hiện rõ "
+                        "để bạn thao tác.", "system")
+        # _open_login_window nằm ở SettingsInterface (nơi có thẻ Đăng nhập và
+        # InfoBar). Gọi qua settings_interface, KHÔNG gọi self._open_login_window:
+        # MainWindow không có hàm đó và sẽ ném AttributeError đúng vào lúc người
+        # dùng cần nó nhất — lần chạy đầu tiên, khi chưa có cookie.
+        self.settings_interface._open_login_window(wait_for_login=True)
+        return False
 
     def _launch(self, coro_factory, task_desc: str):
         self.stop_event.clear()
@@ -1030,6 +1172,40 @@ class MainWindow(MSFluentWindow):
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=4000
             )
+
+        # GIẢI PHÓNG worker. Thiếu bước này là nguồn gốc của "chạy xong vẫn lag":
+        # QThread đã chạy xong vẫn giữ toàn bộ Python frame, closure `coro_factory`
+        # (bắt cả engine + cache), và 3 Signal đã kết nối. Mỗi phiên quét để lại
+        # một object như vậy, cộng dồn qua nhiều lần chạy.
+        self._release_worker()
+
+    def _release_worker(self):
+        """Hủy QThread và ngắt Signal sau khi phiên quét kết thúc."""
+        w = self.worker
+        self.worker = None
+        if w is None:
+            return
+        try:
+            # Ngắt Signal trước để callback không bắn vào object sắp bị xoá.
+            for sig in (w.signals.sig_log, w.signals.sig_stats,
+                        w.signals.sig_finished):
+                try:
+                    sig.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except Exception:
+            pass
+        try:
+            if w.isRunning():
+                w.wait(3000)
+        except Exception:
+            pass
+        # Không deleteLater nếu closeEvent đang chạy trên chính thread này.
+        try:
+            w.deleteLater()
+        except Exception:
+            pass
+        self.append_log("[*] Đã giải phóng tiến trình quét.", "system")
 
     def closeEvent(self, event):
         """Dọn dẹp sạch sẽ khi đóng cửa sổ ứng dụng.

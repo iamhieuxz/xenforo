@@ -117,7 +117,48 @@ Dùng khi môi trường không cho Playwright tự mở trình duyệt.
 > (2) `localhost` resolve ra `::1` trước `127.0.0.1` nên request có thể bị từ chối;
 > (3) xung đột với mọi công cụ khác muốn dùng cổng 9222.
 
+### Giảm bộ nhớ và độ trễ
+
+Đo trên máy thật — **app chỉ dùng 19–31 MB, Chromium mới là chỗ ngốn RAM**:
+
+| Trạng thái | RAM Chromium |
+|---|---|
+| Vừa mở | 322 MB |
+| 5 tab | 650 MB |
+| 10 tab | 902 MB |
+| 20 tab | 1.397 MB |
+
+Mỗi tab ~55 MB. Các nút chỉnh trong `config.py`:
+
+```python
+BLOCK_IMAGES = True    # chặn ảnh/font ở tầng mạng — app chỉ cần DOM
+MAX_OPEN_TABS = 4      # số tab Chromium tồn tại cùng lúc
+```
+
+Chặn ảnh **không** làm mất media: parser đọc `data-src` trong DOM, không đọc
+ảnh đã render (đã kiểm chứng: 3/3 ảnh bóc được cả khi chặn).
+
+Nhật ký log bị giới hạn ở 20.000 ký tự. Đo được chi phí mỗi dòng của `QTextEdit`
+tỉ lệ với độ dài tài liệu:
+
+| Trần nhật ký | Chi phí/dòng |
+|---|---|
+| 20.000 ký tự | 0,29 ms |
+| 40.000 | 0,55 ms |
+| 120.000 | 1,71 ms |
+
+Đây là nguyên nhân "chạy xong vẫn lag": widget giữ hàng chục nghìn dòng và phải
+layout lại mỗi lần vẽ.
+
 ### Dùng session đăng nhập có sẵn
+
+**Lần chạy đầu tiên app tự mở trình duyệt để bạn đăng nhập.** Bấm Quét khi chưa
+có phiên → app mở cửa sổ trình duyệt (không ẩn), bạn đăng nhập, đóng nó, app tự
+phát hiện và cho phép quét. Các lần sau chạy ẩn hoàn toàn.
+
+Cơ chế: app kiểm cookie `xf_user` trong profile trước mỗi lần quét. Không có
+cookie đó thì mọi request vào box riêng bị XenForo chuyển về trang đăng nhập —
+app sẽ tải HTML trang login thay vì media, rất nặng và không có kết quả.
 
 Ba cách, từ an toàn đến tiện:
 
@@ -181,7 +222,8 @@ xenforo/
 ├── config.py          # Toàn bộ tham số nằm ở đây
 ├── test_v72.py        # 154 test cho core engine, parser, downloader, cache
 ├── test_review_fixes.py   # 21 test hồi quy sau đợt review
-├── test_persistent_mode.py# 24 test cho chế độ persistent
+├── test_persistent_mode.py# 27 test cho chế độ persistent
+├── test_first_login.py    # 15 test cho đăng nhập lần đầu + bộ nhớ
 ├── test_gui_fluent.py     # 8 test cho giao diện Qt
 ├── _check_palette.py  # Self-check tương phản WCAG cho bảng màu Tkinter
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
@@ -265,16 +307,17 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 ## Kiểm thử
 
 ```bash
-python -m unittest test_v72 test_review_fixes test_persistent_mode test_gui_fluent
+python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent
 ```
 
-**207 test**, chạy khoảng 12 giây:
+**225 test**, chạy khoảng 16 giây:
 
 | File | Số test | Phạm vi |
 |---|---|---|
 | `test_v72.py` | 154 | Core: bóc DOM, downloader, cache, engine |
 | `test_review_fixes.py` | 21 | Hồi quy cho các lỗi tìm thấy trong đợt review |
-| `test_persistent_mode.py` | 24 | Chế độ persistent, profile, session |
+| `test_persistent_mode.py` | 27 | Chế độ persistent, profile, session |
+| `test_first_login.py` | 15 | Đăng nhập lần đầu, giới hạn bộ nhớ |
 | `test_gui_fluent.py` | 8 | Giao diện Qt |
 
 Phần lớn không cần mạng và không mở trình duyệt thật. Ba script kiểm chứng
@@ -283,6 +326,10 @@ Phần lớn không cần mạng và không mở trình duyệt thật. Ba scrip
 ```bash
 python probe_cdp.py              # 13/13 — kiểm soát cổng CDP
 python probe_persistent_mode.py  # 8/8   — mode persistent với trình duyệt thật
+python probe_no_port.py          # 7/7   — app không mở cổng ở mode persistent
+python probe_image_block.py      # 5/5   — chặn ảnh không phá parser
+python probe_log_leak.py         # 3/3   — nhật ký không phình vô hạn
+python probe_memory.py           # đo RAM thực tế
 python audit_repro.py            # 4/4   — các lỗi P0 đã sửa
 ```
 

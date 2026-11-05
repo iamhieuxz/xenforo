@@ -55,6 +55,21 @@ SESSION_HEADLESS = os.environ.get("V72_SESSION_HEADLESS", "1") not in ("0", "fal
 # 0xFFFF0001). Để rỗng nếu máy bạn chạy bình thường và muốn sandbox bảo vệ.
 SESSION_EXTRA_ARGS = ["--no-sandbox", "--disable-crash-reporter"]
 
+# ---------- Giảm bộ nhớ ----------
+# App chỉ cần DOM để tìm URL media, KHÔNG cần nhìn thấy ảnh. Chặn tải ảnh/media/
+# font ở tầng mạng giảm mạnh RAM và băng thông.
+#
+# Đo được trên máy thật: mỗi tab Chromium ngốn ~55 MB. Với TAB_SEM=5 là ~600 MB
+# chỉ để giữ tab, chưa kể base 322 MB của trình duyệt. Tắt ảnh không làm giảm
+# RAM/tab nhiều, nhưng giảm thời gian render và băng thông rõ rệt — trang về
+# nhanh hơn nên tab được đóng sớm hơn, tổng RAM đỉnh thấp hơn.
+BLOCK_IMAGES = True     # chặn ảnh/font/media: chỉ tải HTML/CSS/JS cần thiết
+BLOCK_FONTS = True
+
+# Giới hạn cứng để RAM không vượt ngưỡng:
+MAX_OPEN_TABS = 4       # số tab Chromium được tồn tại cùng lúc (cứng, không chỉ semaphore)
+MEMORY_SOFT_LIMIT_MB = 1200   # vượt ngưỡng này thì log cảnh báo (không tự kill)
+
 TAB_SEM = 5            # số tab Playwright mở đồng thời
 DOWNLOAD_SEM = 10      # số request tải đồng thời
 THREAD_SEM = 2         # số thread 1 user được bóc đồng thời

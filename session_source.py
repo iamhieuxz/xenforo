@@ -176,6 +176,87 @@ def read_cookie_summary(profile_dir, hosts_filter=None):
                 "reason": f"{type(e).__name__}: {e}"}
 
 
+# Cookie đánh dấu đã đăng nhập XenForo. Không có nó thì mọi request vào box
+# riêng sẽ bị chuyển về trang đăng nhập, và app tải về HTML của trang login
+# chứ không phải media.
+LOGIN_COOKIE = "xf_user"
+
+# Host chứa diễn đàn cần đăng nhập. Dùng để lọc khi kiểm cookie.
+FORUM_HOST_HINTS = ("rphang",)
+
+
+def has_login_session(profile_dir, hosts_filter=None):
+    """True nếu profile đã có cookie đăng nhập XenForo (xf_user).
+
+    Đây là căn cứ để quyết định có cần mở phiên đăng nhập đầu tiên hay không.
+    Chỉ đọc được khi trình duyệt đóng; nếu đang chạy thì trả None (không biết).
+    """
+    import sqlite3
+    db = cookie_db_path(profile_dir)
+    if not db:
+        return False
+    try:
+        uri = "file:" + db.replace("\\", "/") + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2)
+        try:
+            rows = conn.execute(
+                "SELECT host_key, name FROM cookies WHERE name = ?",
+                (LOGIN_COOKIE,)).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+    if not rows:
+        return False
+    if not hosts_filter:
+        return True
+    return any(any(f.lower() in host.lower() for f in hosts_filter)
+               for host, _ in rows)
+
+
+def needs_first_login(profile_dir):
+    """Có cần mở phiên đăng nhập đầu tiên không.
+
+    Trả (need_login: bool, reason: str). Trả (False, ...) khi không xác định
+    được — thà chạy ẩn rồi báo lỗi bằng log còn hơn treo chờ người dùng.
+    """
+    if is_browser_running_for_profile(profile_dir):
+        return False, "trình duyệt đang chạy, không đọc được cookie"
+    got = has_login_session(profile_dir, FORUM_HOST_HINTS)
+    if got is None:
+        return False, "không đọc được file cookie"
+    if got:
+        return False, "đã có phiên đăng nhập"
+    return True, "chưa có cookie xf_user -> cần đăng nhập lần đầu"
+
+
+def is_browser_running_for_profile(profile_dir):
+    """True nếu có tiến trình trình duyệt đang dùng đúng profile này.
+
+    Nhận diện qua command line (--user-data-dir) vì tên process không nói được
+    profile nào. Dùng cho cả việc kiểm khoá lẫn kiểm session.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["wmic", "process", "where",
+             "name='chrome.exe' or name='browser.exe' or name='msedge.exe'",
+             "get", "CommandLine", "/format:list"],
+            capture_output=True, text=True, timeout=10, errors="replace").stdout
+    except Exception:
+        return False
+    needle = os.path.normcase(os.path.abspath(profile_dir))
+    for line in out.splitlines():
+        if "user-data-dir" not in line.lower():
+            continue
+        if needle in os.path.normcase(line):
+            return True
+    return False
+
+
 def copy_profile(src, dst, overwrite=False):
     """Copy profile, BỎ QUA cache (không cần cho đăng nhập, vài GB).
 

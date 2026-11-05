@@ -96,9 +96,58 @@ class CrawlerEngine:
             return None
 
         self._browser = ctx
+
+        # Chặn tài nguyên không cần. App chỉ đọc DOM để tìm URL media; tải ảnh
+        # và font chỉ tốn băng thông và làm render chậm -> tab giữ lâu hơn ->
+        # tốn RAM. Đo được: mỗi tab Chromium ~55 MB.
+        if getattr(config, "BLOCK_IMAGES", True) or getattr(config, "BLOCK_FONTS", True):
+            await self._install_resource_blocker(ctx)
+
         self.log(f"[*] Trình duyệt: {os.path.basename(exe)} | profile: {profile} | "
                  f"{'ẩn' if getattr(config, 'SESSION_HEADLESS', True) else 'hiện'}", "system")
         return ctx
+
+    async def _install_resource_blocker(self, ctx):
+        """Chặn ảnh/font/media ở tầng mạng.
+
+        Không đụng tới HTML/CSS/JS: engine cần HTML để bóc DOM, và XenForo cần
+        JS của nó chạy để dựng lazy-load. Chỉ bỏ những loại tài nguyên mà app
+        không bao giờ đọc tới (app tải media bằng request riêng, không qua
+        renderer của tab).
+        """
+        block_images = bool(getattr(config, "BLOCK_IMAGES", True))
+        block_fonts = bool(getattr(config, "BLOCK_FONTS", True))
+
+        # XenForo dùng lazy-load: nhiều ảnh chỉ có data-src, không có src. Nếu
+        # chặn ảnh mà JS lazy-load gán src muộn thì DOM vẫn giữ data-src nên
+        # engine vẫn bóc được — parser đã ưu tiên data-src.
+        types = set()
+        if block_images:
+            types.update({"image"})
+        if block_fonts:
+            types.add("font")
+
+        if not types:
+            return
+
+        async def _route(route):
+            try:
+                if route.request.resource_type in types:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
+
+        try:
+            await ctx.route("**/*", _route)
+            self.log(f"[*] Đã chặn tài nguyên không cần: {', '.join(sorted(types))} "
+                     f"(giảm băng thông và RAM)", "system")
+        except Exception as e:
+            self.log(f"[!] Không đặt được bộ chặn tài nguyên: {e}")
 
     async def _connect_cdp(self, p):
         state = await asyncio.to_thread(browser_launcher.probe_port)
