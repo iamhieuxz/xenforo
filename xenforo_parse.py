@@ -22,22 +22,51 @@ def make_soup(html):
         return BeautifulSoup(html, 'html.parser')
 
 
+# Tên thiết bị Windows cấm dùng làm tên file, KỂ CẢ khi có phần mở rộng:
+# "con.txt" vẫn bị PermissionError. Bản cũ chỉ so khớp nguyên chuỗi nên
+# "con.txt" lọt qua -> ghi file thất bại giữa lúc tải.
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def clean_name(name):
-    """Tên file an toàn cho Windows."""
+    """Tên file an toàn cho Windows.
+
+    Ba lỗi đã đo được ở bản cũ, đều làm hỏng việc ghi file:
+    1. Ký tự NUL (\\x00) không bị loại -> open() ném
+       "ValueError: embedded null character", media hỏng mà không rõ vì sao.
+    2. Tên thiết bị chỉ bị chặn khi KHỚP NGUYÊN CHUỖI; "con.txt" lọt qua rồi
+       bị Windows từ chối với PermissionError.
+    3. Không giới hạn theo ngân sách độ dài còn lại của đường dẫn: cắt cứng 180
+       ký tự vẫn có thể đẩy đường dẫn đầy đủ vượt MAX_PATH 260 của Windows.
+       Ở đây trả về tên đã cắt; chỗ gọi tự tính thêm ngân sách folder.
+    """
     if not name:
         return "Untitled"
     name = str(name).replace('\xa0', ' ')
     name = re.sub(r'[\r\n\t]', ' ', name)
+    # Loại ký tự điều khiển, gồm cả NUL. Giữ dấu tiếng Việt (>= 0x20).
+    name = "".join(ch for ch in name if ch >= " " and ch != "\x7f")
     name = re.sub(r'[\\/*?:"<>|]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     name = re.sub(r'[\s.]+$', '', name)
     if not name:
         return "Untitled"
-    reserved = {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-                "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"}
-    if name.upper() in reserved:
+
+    # Kiểm theo phần TRƯỚC dấu chấm đầu tiên: "con.txt" -> "CON".
+    stem = name.split(".")[0].upper()
+    if stem in _WIN_RESERVED:
         name = "_" + name
-    return name.strip()[:180]
+    return name.strip()[:MAX_NAME_LEN]
+
+
+# Trần độ dài một thành phần tên. 180 ký tự là mức an toàn cho folder lồng nhau
+# trên Windows: 260 (MAX_PATH) - ~60 cho phần gốc và 2 cấp folder - ~40 cho
+# timestamp + hash + đuôi file.
+MAX_NAME_LEN = 120
 
 
 def get_url_filename(url):
@@ -390,9 +419,26 @@ def thread_folder(base_dir, author, title, date_prefix):
     date_prefix rỗng thì KHÔNG ghi "[ ]" trơ: dùng nhãn "khong-ngay" để folder
     vẫn ổn định qua các lần quét. Trước đây rỗng/0000 đều tạo tên khác nhau ở
     mỗi lần chạy, làm app tưởng là bài mới và tải lại từ đầu.
+
+    Cắt tiêu đề theo NGÂN SÁCH CÒN LẠI của đường dẫn, không cắt cứng một số:
+    Windows giới hạn MAX_PATH 260 ký tự cho đường dẫn tuyệt đối (khi không
+    dùng tiền tố \\\\?\\). Đo được: base_dir sâu + tiêu đề 200 ký tự vẫn cho ra
+    đường dẫn 281 ký tự, và mọi lần ghi file sau đó đều thất bại. Ngân sách phải
+    tính từ base_dir thật và chừa chỗ cho tên file media.
     """
     stamp = clean_name(date_prefix) if date_prefix else "khong-ngay"
-    return os.path.join(base_dir, clean_name(author), f"[{stamp}] {title}")
+    safe_author = clean_name(author)
+    prefix = f"[{stamp}] "
+
+    # Chừa chỗ cho: tên file media dài nhất app sinh ra
+    # ("[YYYYMMDD_HHMMSS]_media_0123_<slug>_abcdef.jpg") + đường dẫn tương đối.
+    MEDIA_HEADROOM = 60
+    fixed = len(os.path.abspath(base_dir)) + 1 + len(safe_author) + 1 + len(prefix)
+    budget = 260 - MEDIA_HEADROOM - fixed
+    budget = max(32, min(budget, MAX_NAME_LEN))
+
+    safe_title = clean_name(title)[:budget].strip() or "Untitled"
+    return os.path.join(base_dir, safe_author, f"{prefix}{safe_title}")
 
 
 def next_page_url(soup, page_url):

@@ -62,7 +62,8 @@ python -m venv .venv
 pip install playwright==1.54.0 aiofiles==25.1.0 beautifulsoup4==4.15.0 lxml==6.1.1
 ```
 
-App dùng Playwright ở chế độ kết nối CDP, nên **không cần** `playwright install` (không dùng browser do Playwright tải về).
+App dùng Playwright để điều khiển trình duyệt có sẵn trên máy, nên **không cần**
+`playwright install` (không dùng browser do Playwright tải về).
 
 ## Chạy
 
@@ -77,14 +78,76 @@ Giao diện Acrylic/Mica hiện đại, thẻ bo góc, thanh tiến trình độ
 python v72.py
 ```
 
-Lần chạy đầu, app tự mở trình duyệt ở cổng debug 9222 bằng profile riêng tại `%LOCALAPPDATA%\V72Crawler\v72_crawl`. Muốn tự mở trình duyệt trước, đặt `AUTO_LAUNCH_BROWSER = False` trong `config.py`.
-
 Muốn chạy thử mà không đụng ổ thật, trỏ thư mục gốc sang nơi khác:
 
 ```bash
 set RPHANG_DIR=D:\test-rphang
-python v72.py
+python gui_fluent.py
 ```
+
+## Hai chế độ điều khiển trình duyệt
+
+Đặt `BROWSER_MODE` trong `config.py`.
+
+### `persistent` (mặc định) — không cần cổng
+
+Playwright tự mở trình duyệt với một profile **cố định** tại
+`%LOCALAPPDATA%\V72Crawler\session_<trình duyệt>`.
+
+- **Không dùng cổng TCP nào.** Playwright nói chuyện qua pipe.
+- **Đăng nhập một lần là dùng mãi.** Session lưu trong profile, sống qua các lần
+  mở/đóng (đã kiểm chứng: mở/đóng 3 lần liên tiếp vẫn còn cookie).
+- Nút **Đăng nhập** ở trang Cài đặt mở trình duyệt có cửa sổ để bạn đăng nhập,
+  rồi phiên quét sẽ dùng lại chính profile đó.
+
+```python
+BROWSER_MODE = "persistent"
+SESSION_BROWSER = "chrome"      # "chrome" | "coccoc" | "edge"
+SESSION_PROFILE = ""            # rỗng = dùng profile riêng của app
+SESSION_HEADLESS = True         # False để thấy cửa sổ khi quét
+```
+
+### `cdp` — đường cũ, giữ làm dự phòng
+
+Nối vào cổng debug của một trình duyệt đang chạy (`--remote-debugging-port`).
+Dùng khi môi trường không cho Playwright tự mở trình duyệt.
+
+> **Vì sao `persistent` là mặc định:** cổng TCP 9222 có ba vấn đề đã đo được —
+> (1) một tiến trình bất kỳ chiếm cổng làm app tưởng Chromium đã sẵn sàng;
+> (2) `localhost` resolve ra `::1` trước `127.0.0.1` nên request có thể bị từ chối;
+> (3) xung đột với mọi công cụ khác muốn dùng cổng 9222.
+
+### Dùng session đăng nhập có sẵn
+
+Ba cách, từ an toàn đến tiện:
+
+| Cách | An toàn | Session |
+|---|---|---|
+| Để trống `SESSION_PROFILE` (mặc định) | Cao nhất — profile riêng của app | Đăng nhập một lần qua nút **Đăng nhập** |
+| Trỏ vào profile **đã copy** | Cao — app chỉ ghi vào bản copy | Có sẵn, nhưng là bản chụp |
+| Trỏ vào profile **thật** của trình duyệt | Thấp — app ghi vào dữ liệu bạn đang dùng | Có sẵn, luôn mới nhất |
+
+```python
+# Ví dụ dùng profile Chrome có sẵn (phải ĐÓNG Chrome trước)
+SESSION_BROWSER = "chrome"
+SESSION_PROFILE = r"C:\Users\<bạn>\AppData\Local\Google\Chrome\User Data"
+```
+
+**Bắt buộc phải đóng trình duyệt trước.** Đo được: khi trình duyệt đang chạy nó
+giữ khoá độc quyền trên đúng file `Cookies` trong profile:
+
+```
+Network/Cookies        BI KHOÁ    <- độc quyền
+Preferences            đọc được
+History                đọc được
+Web Data               đọc được
+```
+
+Chỉ file `Cookies` bị khoá — không phải vấn đề quyền của tiến trình gọi, không có
+quyền nào vượt được. App sẽ báo rõ nếu phát hiện trình duyệt đang chạy.
+
+**Cảnh báo:** profile chứa cookie, mật khẩu đã lưu và lịch sử duyệt web. Chỉ dùng
+cách thứ ba khi bạn chấp nhận app ghi vào dữ liệu đó.
 
 ## Cách dùng
 
@@ -113,10 +176,13 @@ xenforo/
 ├── xenforo_parse.py   # Bóc DOM XenForo (hàm thuần, không đụng mạng)
 ├── xf_selectors.py    # Regex và hằng dùng chung cho phần bóc DOM (tránh đụng stdlib selectors)
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
-├── browser_launcher.py# Tự mở trình duyệt ở cổng CDP 9222
+├── browser_launcher.py# Dò trình duyệt, kiểm tra cổng CDP (chế độ dự phòng)
+├── session_source.py  # Profile trình duyệt: dò, kiểm tra khoá, copy
 ├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 154 unit test cho core engine, parser, downloader, cache
-├── test_gui_fluent.py # 8 unit test cho giao diện PySide6 Fluent
+├── test_v72.py        # 154 test cho core engine, parser, downloader, cache
+├── test_review_fixes.py   # 21 test hồi quy sau đợt review
+├── test_persistent_mode.py# 24 test cho chế độ persistent
+├── test_gui_fluent.py     # 8 test cho giao diện Qt
 ├── _check_palette.py  # Self-check tương phản WCAG cho bảng màu Tkinter
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
 ```
@@ -199,10 +265,26 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 ## Kiểm thử
 
 ```bash
-python -m unittest test_v72
+python -m unittest test_v72 test_review_fixes test_persistent_mode test_gui_fluent
 ```
 
-154 test, chạy khoảng 7 giây. Phần lớn không cần mạng: phần bóc DOM, đếm thống kê, cache, dừng khẩn cấp đều dùng dữ liệu giả.
+**207 test**, chạy khoảng 12 giây:
+
+| File | Số test | Phạm vi |
+|---|---|---|
+| `test_v72.py` | 154 | Core: bóc DOM, downloader, cache, engine |
+| `test_review_fixes.py` | 21 | Hồi quy cho các lỗi tìm thấy trong đợt review |
+| `test_persistent_mode.py` | 24 | Chế độ persistent, profile, session |
+| `test_gui_fluent.py` | 8 | Giao diện Qt |
+
+Phần lớn không cần mạng và không mở trình duyệt thật. Ba script kiểm chứng
+đầu-cuối chạy tay (có mạng):
+
+```bash
+python probe_cdp.py              # 13/13 — kiểm soát cổng CDP
+python probe_persistent_mode.py  # 8/8   — mode persistent với trình duyệt thật
+python audit_repro.py            # 4/4   — các lỗi P0 đã sửa
+```
 
 Test **hermetic**: `setUpModule` trỏ `config.DOWNLOAD_DIR` và biến
 `RPHANG_DIR` về thư mục tạm, nên suite không mở và không ghi

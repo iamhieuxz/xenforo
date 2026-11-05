@@ -867,6 +867,13 @@ class XenForoScannerApp:
             self.cache.close()
         except Exception:
             pass
+        # Đóng trình duyệt do CHÍNH app mở. Không đụng trình duyệt người dùng tự
+        # mở. Bản trước không có bước này nên mỗi lần thoát để lại một cửa sổ
+        # mồ côi giữ profile debug.
+        try:
+            browser_launcher.shutdown()
+        except Exception:
+            pass
         # Xả callback after(0) còn treo TRƯỚC khi destroy root: `log()` luôn đi qua
         # root.after(0, ...), nên engine ghi dòng cuối ngay trước khi thoát sẽ để
         # lại callback trỏ tới widget đã chết -> Tcl báo "invalid command name

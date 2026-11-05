@@ -12,6 +12,7 @@ Thay thế toàn bộ tầng giao diện Tkinter cũ bằng chuẩn thiết kế
 import asyncio
 import os
 import re
+import subprocess
 import sys
 import threading
 from typing import Optional
@@ -37,6 +38,7 @@ from qfluentwidgets import (
 
 import config
 import browser_launcher
+import session_source
 from cache import MediaCache, LocalUserIndex
 from engine import CrawlerEngine
 from downloader import count_files
@@ -481,13 +483,27 @@ class SettingsInterface(QWidget):
         group_storage.addSettingCard(self.card_folder)
         layout.addWidget(group_storage)
 
+        # Nhóm Phiên đăng nhập
+        group_session = SettingCardGroup("Phiên đăng nhập", self)
+        self.card_login = PushSettingCard(
+            text="Đăng nhập",
+            icon=FluentIcon.PEOPLE,
+            title="Đăng nhập vào diễn đàn (chỉ cần một lần)",
+            content=self._session_summary(),
+            parent=group_session
+        )
+        self.card_login.clicked.connect(self._open_login_window)
+        group_session.addSettingCard(self.card_login)
+        layout.addWidget(group_session)
+
         # Nhóm Trình duyệt & Cổng CDP
-        group_browser = SettingCardGroup("Trình duyệt Chromium (Cốc Cốc / Chrome)", self)
+        group_browser = SettingCardGroup("Trình duyệt", self)
         self.card_browser_launch = PushSettingCard(
             text="Mở trình duyệt Debug",
             icon=FluentIcon.APPLICATION,
-            title=f"Cổng kết nối CDP: {config.CDP_PORT}",
-            content="Khởi động Cốc Cốc hoặc Chrome với profile debug riêng biệt",
+            title=f"Cổng kết nối CDP: {config.CDP_PORT} (chế độ dự phòng)",
+            content="Chỉ dùng khi BROWSER_MODE = \"cdp\". Chế độ mặc định "
+                    "(persistent) không cần cổng này.",
             parent=group_browser
         )
         self.card_browser_launch.clicked.connect(self._launch_browser)
@@ -527,7 +543,8 @@ class SettingsInterface(QWidget):
         if folder:
             self.main_window.download_dir = os.path.abspath(folder)
             self.card_folder.setContent(self.main_window.download_dir)
-            self.main_window.reload_storage()
+            if not self.main_window.reload_storage():
+                return
             InfoBar.success(
                 title="Đã đổi thư mục",
                 content=f"Thư mục lưu trữ mới: {self.main_window.download_dir}",
@@ -536,14 +553,105 @@ class SettingsInterface(QWidget):
                 duration=3000
             )
 
+    def _session_summary(self):
+        """Dòng mô tả ngắn về trạng thái phiên, hiển thị trên thẻ Cài đặt."""
+        try:
+            browser = (config.SESSION_BROWSER or "chrome").lower()
+            prof = session_source.resolve_profile(browser)
+            running = session_source.is_browser_running(browser)
+            parts = [f"{browser} · {prof}"]
+            if running:
+                parts.append("đang chạy (cần đóng trước khi quét)")
+            return " | ".join(parts)
+        except Exception:
+            return "Chưa cấu hình phiên đăng nhập."
+
+    def _open_login_window(self):
+        """Mở trình duyệt CÓ CỬA SỔ để người dùng đăng nhập.
+
+        Đây là điểm mấu chốt của mode persistent: mở bằng cùng `user_data_dir`
+        với lúc quét, nên cookie đăng nhập nằm đúng chỗ và các phiên sau tự
+        dùng lại — không cần đăng nhập lại.
+
+        Phải kiểm tra trước: nếu trình duyệt của profile đó đang chạy thì
+        Chromium giữ khoá ProcessSingleton và tiến trình mới thoát ngay.
+        """
+        browser = (config.SESSION_BROWSER or "chrome").lower()
+        exe = browser_launcher.find_browser_for(browser)
+        if not exe:
+            InfoBar.error(
+                title="Không tìm thấy trình duyệt",
+                content=f"Không thấy {browser}. Cài nó hoặc đổi SESSION_BROWSER "
+                        f"trong config.py.",
+                parent=self, position=InfoBarPosition.TOP_RIGHT, duration=6000)
+            return
+
+        prof = session_source.resolve_profile(browser)
+
+        # Profile mặc định của trình duyệt đang chạy -> không mở được (khoá).
+        installed = session_source.find_installed_profiles().get(browser, {}).get("path", "")
+        if installed and os.path.abspath(prof) == os.path.abspath(installed) \
+                and session_source.is_browser_running(browser):
+            InfoBar.warning(
+                title="Trình duyệt đang chạy",
+                content=f"Hãy đóng {browser} hoàn toàn trước khi dùng profile của nó, "
+                        f"hoặc để profile riêng của app (SESSION_PROFILE = \"\").",
+                parent=self, position=InfoBarPosition.TOP_RIGHT, duration=8000)
+            return
+
+        if not session_source.profile_is_writable(prof):
+            InfoBar.error(
+                title="Không ghi được profile",
+                content=f"{prof} không ghi được. Đổi SESSION_PROFILE trong config.py.",
+                parent=self, position=InfoBarPosition.TOP_RIGHT, duration=6000)
+            return
+
+        def work():
+            try:
+                args = [exe, f"--user-data-dir={prof}"]
+                args += list(getattr(config, "SESSION_EXTRA_ARGS", []) or [])
+                # KHÔNG headless: người dùng cần thấy cửa sổ để đăng nhập.
+                proc = subprocess.Popen(args)
+                QTimer.singleShot(0, lambda: self._on_login_opened(browser, prof))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: InfoBar.error(
+                    title="Không mở được",
+                    content=f"{type(e).__name__}: {e}",
+                    parent=self, position=InfoBarPosition.TOP_RIGHT, duration=6000))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_login_opened(self, browser, prof):
+        InfoBar.success(
+            title="Đã mở trình duyệt",
+            content="Hãy đăng nhập vào diễn đàn trong cửa sổ vừa mở, rồi ĐÓNG nó. "
+                    "Phiên sẽ được dùng lại ở các lần quét sau.",
+            parent=self, position=InfoBarPosition.TOP_RIGHT, duration=12000)
+        self.card_login.setContent(self._session_summary())
+
     def _launch_browser(self):
-        if browser_launcher.is_port_open():
+        """Mở/chẩn đoán cổng CDP từ trang Cài đặt.
+
+        Dùng probe_port() thay vì is_port_open(): bản cũ chỉ kiểm HTTP 200 nên
+        một server bất kỳ chiếm cổng cũng làm nút này báo "đã sẵn sàng".
+        """
+        state = browser_launcher.probe_port()
+        if state["state"] == "ready":
             InfoBar.info(
                 title="Cổng đã sẵn sàng",
-                content=f"Cổng debug {config.CDP_PORT} đang mở và sẵn sàng.",
+                content=f"Cổng {config.CDP_PORT}: {state['detail']}",
                 parent=self,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=3000
+            )
+            return
+        if state["state"] == "not_chromium":
+            InfoBar.error(
+                title="Cổng bị chiếm",
+                content=state["detail"],
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=6000
             )
             return
 
@@ -659,6 +767,22 @@ class MainWindow(MSFluentWindow):
         self._boot_error = f"Chỉ ghi được vào thư mục tạm: {self.download_dir}"
 
     def reload_storage(self):
+        """Đổi thư mục lưu trữ: đóng DB cũ, mở DB mới.
+
+        Phải từ chối khi engine đang chạy: worker đang giữ chính đối tượng cache
+        này và ghi vào nó giữa lúc quét. Đóng connection lúc đó làm worker ném
+        "Cannot operate on a closed database", và tệ hơn là mất dòng cache của
+        các file vừa tải xong -> lần sau tải lại toàn bộ.
+        """
+        if self.is_crawling():
+            InfoBar.warning(
+                title="Đang quét",
+                content="Không đổi thư mục lưu trữ khi đang quét. Hãy dừng trước.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=4000
+            )
+            return False
         try:
             self.cache.close()
         except Exception:
@@ -667,12 +791,21 @@ class MainWindow(MSFluentWindow):
         self.local_users = LocalUserIndex(self.cache.conn)
         self.local_users.refresh(self.download_dir)
         self.crawler_interface.refresh_user_dropdown()
+        return True
 
     def auto_launch_browser(self):
+        """Tự mở trình duyệt lúc khởi động, có chẩn đoán cổng rõ ràng."""
         if not config.AUTO_LAUNCH_BROWSER:
             return
-        if browser_launcher.is_port_open():
-            self.append_log(f"[*] Cổng {config.CDP_PORT} đã sẵn sàng.", "system")
+
+        state = browser_launcher.probe_port()
+        if state["state"] == "ready":
+            self.append_log(f"[*] Cổng {config.CDP_PORT} đã sẵn sàng "
+                            f"({state['detail']}).", "system")
+            return
+        if state["state"] == "not_chromium":
+            self.append_log(f"[!] {state['detail']} Đổi CDP_PORT trong config.py "
+                            f"hoặc tắt tiến trình đang giữ cổng.", "error")
             return
 
         def work():
@@ -868,7 +1001,12 @@ class MainWindow(MSFluentWindow):
             )
 
     def closeEvent(self, event):
-        """Dọn dẹp sạch sẽ khi đóng cửa sổ ứng dụng."""
+        """Dọn dẹp sạch sẽ khi đóng cửa sổ ứng dụng.
+
+        Gồm cả việc đóng trình duyệt do CHÍNH app mở: trước đây app mở trình
+        duyệt rồi bỏ mặc, mỗi lần chạy để lại một cửa sổ mồ côi với profile riêng.
+        Không đụng trình duyệt người dùng tự mở.
+        """
         if self.is_crawling():
             self.stop_event.set()
             if self.worker:
@@ -876,6 +1014,10 @@ class MainWindow(MSFluentWindow):
                 self.worker.wait(2000)
         try:
             self.cache.close()
+        except Exception:
+            pass
+        try:
+            browser_launcher.shutdown()
         except Exception:
             pass
         event.accept()

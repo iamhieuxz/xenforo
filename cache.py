@@ -3,15 +3,26 @@
 filename lưu ĐƯỜNG DẪN TUYỆT ĐỐI. Bản cũ lưu basename rồi kiểm tra bằng
 os.path.join(folder, basename) nên gần như không bao giờ trúng cache -> cùng
 một ảnh bị tải lại ở mọi thread.
+
+VỀ THREAD SAFETY: `sqlite3.connect(check_same_thread=False)` chỉ tắt PHÉP KIỂM
+của Python, không làm connection thread-safe. Đo thực tế với 4 thread × 300 lần
+ghi: 3 exception ("not an error", "no more rows available") và chỉ 322/1200
+dòng được ghi — mất 73% dữ liệu, trong khi engine vẫn báo "đã tải xong" nên lần
+quét sau tải lại toàn bộ.
+
+Vì vậy mọi truy cập đi qua một RLock. Đây là mức khoá thô, nhưng tần suất ghi
+thấp (mỗi file một lần) nên không thành điểm nghẽn.
 """
 
 import os
 import sqlite3
+import threading
 from datetime import datetime
 
 
 class MediaCache:
     def __init__(self, db_path):
+        self._lock = threading.RLock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -36,16 +47,18 @@ class MediaCache:
         self.conn.commit()
 
     def record(self, url_hash, abs_path):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO media_index VALUES (?, ?, ?)",
-            (url_hash, os.path.abspath(abs_path), datetime.now().isoformat()))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO media_index VALUES (?, ?, ?)",
+                (url_hash, os.path.abspath(abs_path), datetime.now().isoformat()))
+            self.conn.commit()
 
     def path_for(self, url_hash):
         """Đường dẫn file đã tải, hoặc None. Dữ liệu cũ (basename) bị bỏ qua."""
-        row = self.conn.execute(
-            "SELECT filename FROM media_index WHERE url_clean_hash = ?", (url_hash,)
-        ).fetchone()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT filename FROM media_index WHERE url_clean_hash = ?", (url_hash,)
+            ).fetchone()
         if row and row[0] and os.path.isabs(row[0]) and os.path.exists(row[0]):
             return row[0]
         return None
@@ -53,9 +66,10 @@ class MediaCache:
     # ---------- ngày mở thread ----------
     def thread_date(self, thread_key):
         """Ngày YYYY-MM-DD đã biết của thread, hoặc None."""
-        row = self.conn.execute(
-            "SELECT date_prefix FROM thread_index WHERE thread_key = ?", (thread_key,)
-        ).fetchone()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT date_prefix FROM thread_index WHERE thread_key = ?", (thread_key,)
+            ).fetchone()
         return row[0] if row and row[0] else None
 
     def remember_thread_date(self, thread_key, date_prefix, folder=None):
@@ -67,21 +81,23 @@ class MediaCache:
         """
         if not date_prefix and not folder:
             return
-        self.conn.execute(
-            "INSERT INTO thread_index (thread_key, date_prefix, folder, updated_at) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(thread_key) DO UPDATE SET "
-            "  date_prefix = COALESCE(NULLIF(excluded.date_prefix, ''), date_prefix), "
-            "  folder      = COALESCE(excluded.folder, folder), "
-            "  updated_at  = excluded.updated_at",
-            (thread_key, date_prefix or "", folder, datetime.now().isoformat()))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO thread_index (thread_key, date_prefix, folder, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(thread_key) DO UPDATE SET "
+                "  date_prefix = COALESCE(NULLIF(excluded.date_prefix, ''), date_prefix), "
+                "  folder      = COALESCE(excluded.folder, folder), "
+                "  updated_at  = excluded.updated_at",
+                (thread_key, date_prefix or "", folder, datetime.now().isoformat()))
+            self.conn.commit()
 
     def close(self):
-        try:
-            self.conn.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
 
 
 class LocalUserIndex:
@@ -93,13 +109,15 @@ class LocalUserIndex:
 
     def __init__(self, conn):
         self.conn = conn
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS local_users (
-                folder_name TEXT PRIMARY KEY,
-                last_seen TEXT
-            )
-        """)
-        self.conn.commit()
+        self._lock = getattr(conn, "_lock", threading.RLock())
+        with self._lock:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS local_users (
+                    folder_name TEXT PRIMARY KEY,
+                    last_seen TEXT
+                )
+            """)
+            self.conn.commit()
 
     def refresh(self, root_dir):
         """Quét thư mục gốc, đồng bộ vào DB. Folder mất trên ổ thì đánh dấu
@@ -115,26 +133,29 @@ class LocalUserIndex:
             return 0
 
         now = datetime.now().isoformat()
-        self.conn.execute("UPDATE local_users SET last_seen = NULL")
-        self.conn.executemany(
-            "INSERT INTO local_users (folder_name, last_seen) VALUES (?, ?) "
-            "ON CONFLICT(folder_name) DO UPDATE SET last_seen = excluded.last_seen",
-            [(n, now) for n in found])
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("UPDATE local_users SET last_seen = NULL")
+            self.conn.executemany(
+                "INSERT INTO local_users (folder_name, last_seen) VALUES (?, ?) "
+                "ON CONFLICT(folder_name) DO UPDATE SET last_seen = excluded.last_seen",
+                [(n, now) for n in found])
+            self.conn.commit()
         return len(found)
 
     def names(self):
         """Folder còn trên ổ, sắp xếp A-Z."""
-        rows = self.conn.execute(
-            "SELECT folder_name FROM local_users "
-            "WHERE last_seen IS NOT NULL ORDER BY folder_name COLLATE NOCASE"
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT folder_name FROM local_users "
+                "WHERE last_seen IS NOT NULL ORDER BY folder_name COLLATE NOCASE"
+            ).fetchall()
         return [r[0] for r in rows]
 
     def stale_names(self):
         """Folder đã bị xoá khỏi ổ nhưng row vẫn còn - để bạn tự xử lý."""
-        rows = self.conn.execute(
-            "SELECT folder_name FROM local_users "
-            "WHERE last_seen IS NULL ORDER BY folder_name COLLATE NOCASE"
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT folder_name FROM local_users "
+                "WHERE last_seen IS NULL ORDER BY folder_name COLLATE NOCASE"
+            ).fetchall()
         return [r[0] for r in rows]

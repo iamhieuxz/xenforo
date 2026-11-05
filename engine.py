@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 
 import config
 import browser_launcher
+import session_source
 import xenforo_parse as X
 from downloader import Downloader, plan_jobs, count_files, index_folder
 
@@ -37,29 +38,108 @@ class CrawlerEngine:
         self.thread_semaphore = asyncio.Semaphore(config.THREAD_SEM)
         self.user_semaphore = asyncio.Semaphore(config.USER_SEM)
         self.active_pages = set()
+        self._browser = None        # giữ để đóng ở close_browser()
 
     # ---------- trình duyệt ----------
     async def connect(self, p):
-        """Thử CDP; nếu cổng chưa mở thì tự bật trình duyệt rồi thử lại."""
-        if browser_launcher.is_port_open():
-            return await self._connect_once(p)
-        if not config.AUTO_LAUNCH_BROWSER:
-            self.log("[-] Lỗi: Thất bại khi kết nối CDP cổng 9222! "
-                     "Hãy chắc chắn trình duyệt đang bật debug.")
+        """Lấy browser context theo config.BROWSER_MODE.
+
+        "persistent" (mặc định): Playwright tự mở trình duyệt với profile cố
+        định. Không cần cổng TCP nào. Session đăng nhập nằm trong profile nên
+        đăng nhập một lần là dùng mãi.
+
+        "cdp": nối vào cổng debug của trình duyệt đang chạy (đường cũ, giữ làm
+        dự phòng). Phân biệt ba trạng thái: cổng đóng, cổng bị tiến trình khác
+        chiếm, và Chromium thật — bản cũ chỉ kiểm HTTP 200 nên bị đánh lừa.
+        """
+        mode = (getattr(config, "BROWSER_MODE", "persistent") or "persistent").lower()
+        if mode == "cdp":
+            return await self._connect_cdp(p)
+        return await self._connect_persistent(p)
+
+    async def _connect_persistent(self, p):
+        """Mở trình duyệt với profile cố định — không dùng cổng TCP."""
+        profile = session_source.resolve_profile()
+        browser = (getattr(config, "SESSION_BROWSER", "chrome") or "chrome").lower()
+        exe = browser_launcher.find_browser_for(browser)
+
+        if not exe:
+            self.log(f"[-] Không tìm thấy {browser}. Cài nó, hoặc đặt "
+                     f"SESSION_BROWSER trong config.py sang trình duyệt khác.")
             return None
 
-        # Chặn event loop thì GUI không vẽ được -> đẩy sang thread phụ.
+        # Kiểm trước khi mở: thiếu quyền ghi thì Chromium báo "Failed to create
+        # a ProcessSingleton", thông báo đó không nói được nguyên nhân thật.
+        if not session_source.profile_is_writable(profile):
+            self.log(f"[-] Không ghi được vào profile {profile}. "
+                     f"Đổi SESSION_PROFILE trong config.py.")
+            return None
+
+        # Trình duyệt đang chạy trên CÙNG profile này sẽ giữ khoá ProcessSingleton.
+        if session_source.is_browser_running(browser) and \
+                os.path.abspath(profile) == os.path.abspath(
+                    session_source.find_installed_profiles().get(browser, {}).get("path", "")):
+            self.log(f"[!] {browser} đang chạy và profile dùng chính là profile của nó. "
+                     f"Hãy đóng {browser} trước, hoặc dùng profile riêng của app "
+                     f"(đặt SESSION_PROFILE = \"\").")
+            return None
+
+        try:
+            ctx = await p.chromium.launch_persistent_context(
+                user_data_dir=profile,
+                executable_path=exe,
+                headless=bool(getattr(config, "SESSION_HEADLESS", True)),
+                args=list(getattr(config, "SESSION_EXTRA_ARGS", []) or []),
+            )
+        except Exception as e:
+            self.log(f"[-] Không mở được trình duyệt ở mode persistent: {e}")
+            return None
+
+        self._browser = ctx
+        self.log(f"[*] Trình duyệt: {os.path.basename(exe)} | profile: {profile} | "
+                 f"{'ẩn' if getattr(config, 'SESSION_HEADLESS', True) else 'hiện'}", "system")
+        return ctx
+
+    async def _connect_cdp(self, p):
+        state = await asyncio.to_thread(browser_launcher.probe_port)
+        if state["state"] == "ready":
+            return await self._connect_once(p)
+
+        if state["state"] == "not_chromium":
+            self.log(f"[-] Cổng {config.CDP_PORT} đang bị tiến trình khác chiếm. "
+                     f"Đổi CDP_PORT trong config.py hoặc tắt tiến trình đó.")
+            return None
+
+        if not config.AUTO_LAUNCH_BROWSER:
+            self.log(f"[-] Lỗi: Thất bại khi kết nối CDP cổng {config.CDP_PORT}! "
+                     f"Hãy chắc chắn trình duyệt đang bật debug.")
+            return None
+
         ok, msg = await asyncio.to_thread(browser_launcher.launch)
         self.log(f"[*] {msg}", "system")
         return await self._connect_once(p) if ok else None
+
+    async def close_browser(self):
+        """Đóng browser/context đã mở ở mode persistent.
+
+        Ở mode CDP thì KHÔNG đóng: trình duyệt là của người dùng, đóng nó sẽ
+        làm mất cửa sổ họ đang dùng.
+        """
+        ctx = self._browser
+        self._browser = None
+        if ctx is None:
+            return
+        try:
+            await ctx.close()
+        except Exception:
+            pass
 
     async def _connect_once(self, p):
         try:
             browser = await p.chromium.connect_over_cdp(config.CDP_URL)
             return browser.contexts[0] if browser.contexts else await browser.new_context()
-        except Exception:
-            self.log("[-] Lỗi: Thất bại khi kết nối CDP cổng 9222! "
-                     "Hãy chắc chắn trình duyệt đang bật debug.")
+        except Exception as e:
+            self.log(f"[-] Không kết nối được CDP tại {config.CDP_URL}: {e}")
             return None
 
     async def open_page(self, context, url, retries=None):
@@ -172,6 +252,11 @@ class CrawlerEngine:
             except Exception as e:
                 ok = False
                 self.log(f"[-] Lỗi trong tiến trình cào theo link: {e}")
+            finally:
+                # Ở mode persistent, context là CỦA APP — không đóng thì tiến
+                # trình trình duyệt ở lại sau khi quét xong. Ở mode CDP, hàm này
+                # không làm gì (không đóng trình duyệt của người dùng).
+                await self.close_browser()
 
         self._banner(ok, "TIẾN TRÌNH CÀO THEO LINK")
 
@@ -182,31 +267,56 @@ class CrawlerEngine:
         # banner vẫn báo "ĐÃ HOÀN TẤT" dù mọi user đều lỗi.
         state = {"ok": True}
         total = len(user_list)
+        if not total:
+            return
+
         async with async_playwright() as p:
             context = await self.connect(p)
             if not context:
                 return
 
-            async def user_worker(user, idx):
-                async with self.user_semaphore:
+            async def user_worker():
+                """Nhận user từ queue tới khi hết.
+
+                Bản cũ gather() TOÀN BỘ user cùng lúc: với 500 user local, nó
+                tạo 500 coroutine + 500 closure cùng sống dù chỉ USER_SEM cái
+                chạy. Tốn RAM và làm nút Dừng chậm vì phải huỷ từng cái.
+                Queue cố định N worker giống cách crawl_user đã làm cho thread.
+                """
+                while True:
                     if self.stop_event.is_set():
                         return
                     try:
-                        await self.crawl_user(context, user, idx, total, box_url)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        state["ok"] = False
-                        self.log(f"[-] Lỗi user {user}: {e}")
+                        user, idx = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    async with self.user_semaphore:
+                        if self.stop_event.is_set():
+                            return
+                        try:
+                            await self.crawl_user(context, user, idx, total, box_url)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            state["ok"] = False
+                            self.log(f"[-] Lỗi user {user}: {e}")
 
+            queue = asyncio.Queue()
+            for i, u in enumerate(user_list, 1):
+                queue.put_nowait((u, i))
+
+            workers = min(max(1, config.USER_SEM), total)
             try:
-                await asyncio.gather(*[user_worker(u, i) for i, u in enumerate(user_list, 1)])
+                await asyncio.gather(*[user_worker() for _ in range(workers)])
             except asyncio.CancelledError:
                 state["ok"] = False
                 raise
             except Exception as e:
                 state["ok"] = False
                 self.log(f"[-] Tiến trình gặp gián đoạn: {e}")
+            finally:
+                # Như crawl_link: đóng context của app ở mode persistent.
+                await self.close_browser()
 
         self._banner(state["ok"], "TOÀN BỘ TIẾN TRÌNH ĐỒNG BỘ CÁC USER")
 
