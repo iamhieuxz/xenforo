@@ -66,6 +66,13 @@ App dùng Playwright ở chế độ kết nối CDP, nên **không cần** `pla
 
 ## Chạy
 
+**1. Giao diện Windows 11 Fluent Design (Khuyên dùng - PySide6 + PyQt-Fluent-Widgets):**
+```bash
+python gui_fluent.py
+```
+Giao diện Acrylic/Mica hiện đại, thẻ bo góc, thanh tiến trình động, thông báo toast popup (InfoBar), trang Cài đặt tùy chỉnh thư mục lưu trữ và theme trực quan.
+
+**2. Giao diện truyền thống Tkinter:**
 ```bash
 python v72.py
 ```
@@ -99,20 +106,22 @@ Trong lúc chạy, ba nút trên bị vô hiệu hóa, chỉ còn "Dừng khẩn
 
 ```
 xenforo/
-├── v72.py             # Điểm vào: GUI Tkinter, bảng màu, vòng đời tiến trình
+├── gui_fluent.py      # Điểm vào chính: Giao diện Windows 11 Fluent Design (PySide6 + Fluent-Widgets)
+├── v72.py             # Điểm vào phụ: Giao diện Tkinter truyền thống
 ├── engine.py          # Điều phối Playwright: duyệt box -> duyệt thread -> bóc media
 ├── downloader.py      # Lập kế hoạch tải, tải song song, đếm thống kê
 ├── xenforo_parse.py   # Bóc DOM XenForo (hàm thuần, không đụng mạng)
-├── selectors.py       # Regex và hằng dùng chung cho phần bóc DOM
+├── xf_selectors.py    # Regex và hằng dùng chung cho phần bóc DOM (tránh đụng stdlib selectors)
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
 ├── browser_launcher.py# Tự mở trình duyệt ở cổng CDP 9222
 ├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 154 test
-├── _check_palette.py  # Self-check tương phản WCAG cho cả hai bảng màu
+├── test_v72.py        # 154 unit test cho core engine, parser, downloader, cache
+├── test_gui_fluent.py # 8 unit test cho giao diện PySide6 Fluent
+├── _check_palette.py  # Self-check tương phản WCAG cho bảng màu Tkinter
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
 ```
 
-Ranh giới tầng: `v72.py` chỉ lo giao diện, `engine.py` lo điều phối, `downloader.py` lo tải file, `xenforo_parse.py` và `selectors.py` là hàm thuần. Nhờ vậy phần bóc DOM test được không cần mạng.
+Ranh giới tầng: `gui_fluent.py` và `v72.py` chỉ lo giao diện, `engine.py` lo điều phối, `downloader.py` lo tải file, `xenforo_parse.py` và `xf_selectors.py` là hàm thuần. Nhờ vậy phần bóc DOM test được không cần mạng.
 
 ## Luồng hoạt động
 
