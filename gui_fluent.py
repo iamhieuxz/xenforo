@@ -794,7 +794,38 @@ class MainWindow(MSFluentWindow):
         return True
 
     def auto_launch_browser(self):
-        """Tự mở trình duyệt lúc khởi động, có chẩn đoán cổng rõ ràng."""
+        """Chuẩn bị trình duyệt lúc khởi động — theo đúng BROWSER_MODE.
+
+        BẢN TRƯỚC (lỗi): hàm này không kiểm BROWSER_MODE nên dù mode là
+        "persistent" nó vẫn gọi browser_launcher.launch() và MỞ CỔNG 9222.
+        Người dùng đã báo đúng: "phiên này vẫn mở cổng 9222".
+
+        Ở mode persistent KHÔNG mở cổng nào: Playwright tự mở trình duyệt khi
+        bắt đầu quét, qua pipe. Chỉ cần kiểm profile ghi được không và báo
+        trạng thái phiên.
+        """
+        mode = (getattr(config, "BROWSER_MODE", "persistent") or "persistent").lower()
+
+        if mode != "cdp":
+            # persistent: không mở cổng, không mở trình duyệt sớm.
+            browser = (config.SESSION_BROWSER or "chrome").lower()
+            exe = browser_launcher.find_browser_for(browser)
+            profile = session_source.resolve_profile(browser)
+            if not exe:
+                self.append_log(f"[!] Không tìm thấy {browser}. Cài nó hoặc đổi "
+                                f"SESSION_BROWSER trong config.py.", "error")
+                return
+            if not session_source.profile_is_writable(profile):
+                self.append_log(f"[!] Không ghi được profile {profile}. "
+                                f"Đổi SESSION_PROFILE trong config.py.", "error")
+                return
+            self.append_log(f"[*] Chế độ persistent: {os.path.basename(exe)} · "
+                            f"profile {profile}", "system")
+            self.append_log("[*] Không mở cổng TCP nào. Trình duyệt sẽ được mở "
+                            "khi bắt đầu quét.", "system")
+            return
+
+        # mode == "cdp": giữ nguyên đường cũ.
         if not config.AUTO_LAUNCH_BROWSER:
             return
 

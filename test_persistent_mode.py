@@ -204,6 +204,132 @@ class TestEngineModeSelection(unittest.TestCase):
         self.assertIn("self._browser = ctx", src)
 
 
+class TestAutoLaunchRespectsMode(unittest.TestCase):
+    """Lỗi đã sửa: auto_launch_browser() không kiểm BROWSER_MODE.
+
+    Người dùng báo: "phiên này vẫn mở cổng 9222". Nguyên nhân: hai GUI đều gọi
+    browser_launcher.launch() lúc khởi động, mở cổng 9222, dù
+    config.BROWSER_MODE = "persistent". Ở mode persistent KHÔNG được mở cổng
+    TCP nào — Playwright tự mở trình duyệt qua pipe khi bắt đầu quét.
+    """
+
+    def _spy_launch(self):
+        """Thay browser_launcher.launch bằng hàm đếm, tự khôi phục sau test."""
+        import browser_launcher as B
+        calls = []
+        real = B.launch
+
+        def spy(*a, **k):
+            calls.append(1)
+            return False, "(chặn trong test)"
+
+        B.launch = spy
+        self.addCleanup(lambda: setattr(B, "launch", real))
+        return calls
+
+    def test_fluent_auto_launch_does_not_open_port(self):
+        import tempfile
+        from PySide6.QtWidgets import QApplication
+        import gui_fluent
+
+        old_mode = config.BROWSER_MODE
+        old_prof = config.SESSION_PROFILE
+        old_dir = config.DOWNLOAD_DIR
+        tmp = tempfile.mkdtemp(prefix="noport_")
+        try:
+            config.BROWSER_MODE = "persistent"
+            config.SESSION_PROFILE = tmp
+            config.DOWNLOAD_DIR = tmp
+            calls = self._spy_launch()
+
+            app = QApplication.instance() or QApplication([])
+            w = gui_fluent.MainWindow(auto_browser=False)
+            try:
+                w.auto_launch_browser()
+                app.processEvents()
+                self.assertEqual(calls, [],
+                                 "mode persistent KHÔNG được gọi launch() -> "
+                                 "sẽ mở cổng 9222")
+                joined = "\n".join(m for m, _ in w.log_history)
+                self.assertIn("Không mở cổng TCP nào", joined)
+            finally:
+                w.close()
+                app.processEvents()
+        finally:
+            config.BROWSER_MODE = old_mode
+            config.SESSION_PROFILE = old_prof
+            config.DOWNLOAD_DIR = old_dir
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tk_auto_launch_does_not_open_port(self):
+        import tempfile
+        import tkinter as tk
+        import v72
+
+        old_mode = config.BROWSER_MODE
+        old_prof = config.SESSION_PROFILE
+        old_dir = config.DOWNLOAD_DIR
+        tmp = tempfile.mkdtemp(prefix="noport_tk_")
+        try:
+            config.BROWSER_MODE = "persistent"
+            config.SESSION_PROFILE = tmp
+            config.DOWNLOAD_DIR = tmp
+            calls = self._spy_launch()
+
+            root = tk.Tk()
+            root.withdraw()
+            a = v72.XenForoScannerApp(root)
+            try:
+                a.auto_launch_browser()
+                root.update()   # v72 ghi log qua after(0, ...)
+                self.assertEqual(calls, [],
+                                 "mode persistent KHÔNG được gọi launch()")
+                joined = "\n".join(m for m, _ in a._log_lines)
+                self.assertIn("Không mở cổng TCP nào", joined)
+            finally:
+                a.cache.close()
+                root.destroy()
+        finally:
+            config.BROWSER_MODE = old_mode
+            config.SESSION_PROFILE = old_prof
+            config.DOWNLOAD_DIR = old_dir
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_cdp_mode_still_launches(self):
+        """Đối chứng: mode 'cdp' PHẢI gọi launch() — nếu không thì mất dự phòng."""
+        import tempfile
+        from PySide6.QtWidgets import QApplication
+        import gui_fluent
+
+        old_mode = config.BROWSER_MODE
+        old_dir = config.DOWNLOAD_DIR
+        tmp = tempfile.mkdtemp(prefix="cdpm_")
+        try:
+            config.BROWSER_MODE = "cdp"
+            config.DOWNLOAD_DIR = tmp
+            calls = self._spy_launch()
+
+            app = QApplication.instance() or QApplication([])
+            w = gui_fluent.MainWindow(auto_browser=False)
+            try:
+                w.auto_launch_browser()
+                import time
+                time.sleep(0.4)
+                app.processEvents()
+                self.assertGreater(len(calls), 0,
+                                   "mode cdp phải gọi launch(), nếu không mất dự phòng")
+            finally:
+                w.close()
+                app.processEvents()
+        finally:
+            config.BROWSER_MODE = old_mode
+            config.DOWNLOAD_DIR = old_dir
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestBrowserLauncherForBrowser(unittest.TestCase):
     def test_finds_chrome_by_name(self):
         exe = __import__("browser_launcher").find_browser_for("chrome")

@@ -14,6 +14,7 @@ from tkinter import scrolledtext, ttk
 
 import config
 import browser_launcher
+import session_source
 from cache import MediaCache, LocalUserIndex
 from engine import CrawlerEngine
 
@@ -244,7 +245,35 @@ class XenForoScannerApp:
         self._apply_running_state()   # đang quét thì nút phải giữ đúng trạng thái
 
     def auto_launch_browser(self):
-        """Bật trình duyệt cổng 9222 ngay khi mở app (chạy ngoài GUI để không treo)."""
+        """Chuẩn bị trình duyệt lúc khởi động — theo đúng BROWSER_MODE.
+
+        BẢN TRƯỚC (lỗi): không kiểm BROWSER_MODE nên dù mode là "persistent" nó
+        vẫn gọi launch() và MỞ CỔNG 9222. Người dùng đã báo đúng.
+
+        Mode persistent không mở cổng nào — Playwright tự mở trình duyệt khi bắt
+        đầu quét, qua pipe.
+        """
+        mode = (getattr(config, "BROWSER_MODE", "persistent") or "persistent").lower()
+
+        if mode != "cdp":
+            browser = (config.SESSION_BROWSER or "chrome").lower()
+            exe = browser_launcher.find_browser_for(browser)
+            profile = session_source.resolve_profile(browser)
+            if not exe:
+                self.log(f"[!] Không tìm thấy {browser}. Đổi SESSION_BROWSER "
+                         f"trong config.py.", "error")
+                return
+            if not session_source.profile_is_writable(profile):
+                self.log(f"[!] Không ghi được profile {profile}. Đổi "
+                         f"SESSION_PROFILE trong config.py.", "error")
+                return
+            self.log(f"[*] Chế độ persistent: {os.path.basename(exe)} · {profile}",
+                     "system")
+            self.log("[*] Không mở cổng TCP nào. Trình duyệt mở khi bắt đầu quét.",
+                     "system")
+            return
+
+        # mode == "cdp": giữ nguyên đường cũ.
         if not config.AUTO_LAUNCH_BROWSER:
             return
         if browser_launcher.is_port_open():
