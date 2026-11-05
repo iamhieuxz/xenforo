@@ -45,12 +45,19 @@ THREAD_HTML = """<html><body>
 async def run(block_images):
     from playwright.async_api import async_playwright
 
+    # PHẢI ép mode persistent: hàm này kiểm tra _install_resource_blocker, mà
+    # nó chỉ chạy ở nhánh persistent. Để mode cdp thì engine đi nhánh CDP và
+    # mở Chrome với profile mặc định (bị chặn ghi trong môi trường test).
+    config.BROWSER_MODE = "persistent"
     config.BLOCK_IMAGES = block_images
     config.BLOCK_FONTS = block_images
     config.SESSION_HEADLESS = True
     config.SESSION_BROWSER = "chrome"
 
-    tmp = tempfile.mkdtemp(prefix="imgblk_")
+    # Thư mục tạm phải GHI ĐƯỢC: môi trường test chặn ghi %LOCALAPPDATA%, và
+    # Chromium thoát mã 21 (ProcessSingleton) nếu không tạo được lock trong
+    # profile. Đặt trong thư mục dự án để chắc chắn ghi được.
+    tmp = tempfile.mkdtemp(prefix="imgblk_", dir=os.getcwd())
     config.SESSION_PROFILE = os.path.join(tmp, "p")
 
     import engine

@@ -629,8 +629,19 @@ class SettingsInterface(QWidget):
             )
 
     def _session_summary(self):
-        """Dòng mô tả ngắn về trạng thái phiên, hiển thị trên thẻ Cài đặt."""
+        """Dòng mô tả ngắn về trạng thái phiên, hiển thị trên thẻ Cài đặt.
+
+        Phải theo ĐÚNG mode: mode cdp dùng profile của browser_launcher,
+        mode persistent dùng profile riêng của app. Hiện nhầm profile thì người
+        dùng thấy trạng thái không liên quan tới cái app thực sự dùng.
+        """
         try:
+            mode = (getattr(config, "BROWSER_MODE", "cdp") or "cdp").lower()
+            if mode == "cdp":
+                prof = browser_launcher.profile_dir()
+                need, why = session_source.needs_first_login(prof)
+                state = "chưa đăng nhập" if need else "đã đăng nhập"
+                return f"chế độ CDP · {prof} · {state}"
             browser = (config.SESSION_BROWSER or "chrome").lower()
             prof = session_source.resolve_profile(browser)
             running = session_source.is_browser_running(browser)
@@ -1074,10 +1085,17 @@ class MainWindow(MSFluentWindow):
         HTML của trang đăng nhập thay vì media — rất nặng và không có kết quả.
         Người dùng không thấy gì vì chạy ẩn, nên phải chặn từ đầu.
 
-        Trả True nếu được phép quét (đã có session, hoặc đã đăng nhập xong).
+        Profile phải lấy ĐÚNG THEO MODE: ở mode cdp, session nằm trong profile
+        của browser_launcher (BROWSER_PROFILE), không phải profile riêng của
+        mode persistent. Kiểm nhầm profile sẽ đòi đăng nhập oan dù đã có sẵn.
         """
-        browser = (config.SESSION_BROWSER or "chrome").lower()
-        profile = session_source.resolve_profile(browser)
+        mode = (getattr(config, "BROWSER_MODE", "cdp") or "cdp").lower()
+        if mode == "cdp":
+            profile = browser_launcher.profile_dir()
+        else:
+            browser = (config.SESSION_BROWSER or "chrome").lower()
+            profile = session_source.resolve_profile(browser)
+
         need, why = session_source.needs_first_login(profile)
         if not need:
             return True

@@ -166,8 +166,15 @@ class TestCopyProfile(unittest.TestCase):
 class TestEngineModeSelection(unittest.TestCase):
     """engine phải chọn đúng nhánh theo config.BROWSER_MODE."""
 
-    def test_persistent_is_default(self):
-        self.assertEqual(getattr(config, "BROWSER_MODE", None), "persistent")
+    def test_cdp_is_default(self):
+        """Mặc định là 'cdp': bám vào Chrome đang chạy, KHÔNG mở cửa sổ mới.
+
+        Lý do đổi từ 'persistent' sang 'cdp': mode persistent tạo profile MỚI
+        (trắng trơn, không cookie, không extension) nên người dùng thấy "một
+        đống bùi nhùi" và phải đăng nhập lại. Mode cdp dùng lại đúng profile đã
+        có session.
+        """
+        self.assertEqual(getattr(config, "BROWSER_MODE", None), "cdp")
 
     def test_engine_has_both_paths(self):
         import inspect

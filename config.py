@@ -22,19 +22,30 @@ CDP_URL = f"http://{CDP_HOST}:{CDP_PORT}"
 AUTO_LAUNCH_BROWSER = True
 BROWSER_PROFILE = "v72_crawl"   # profile riêng, không đụng phiên đang dùng
 
-# ---------- Cách điều khiển trình duyệt ----------
-# "persistent" — Playwright tự mở trình duyệt với profile CỐ ĐỊNH (khuyên dùng).
-#   Không cần cổng TCP nào; Playwright nói chuyện qua pipe. Session đăng nhập
-#   lưu trong profile nên đăng nhập một lần là dùng mãi (đã kiểm chứng: sống
-#   qua 3 lần mở/đóng liên tiếp).
-# "cdp" — nối vào cổng debug của trình duyệt đang chạy (đường cũ).
-#   Giữ lại làm dự phòng khi môi trường không cho Playwright tự mở trình duyệt.
+# Trình duyệt dùng cho mode CDP: "chrome" | "coccoc" | "edge".
 #
-# Vì sao "persistent" là mặc định: cổng TCP 9222 có ba nhược điểm đã đo được —
-#   (1) một tiến trình bất kỳ chiếm cổng làm app tưởng Chromium đã sẵn sàng;
-#   (2) "localhost" resolve ra ::1 trước 127.0.0.1 nên request có thể bị refuse;
-#   (3) xung đột với mọi công cụ khác cũng muốn cổng 9222.
-BROWSER_MODE = os.environ.get("V72_BROWSER_MODE", "persistent")
+# Vì sao cần khai báo rõ: trước đây launch() gọi find_browser() và lấy ứng viên
+# ĐẦU TIÊN trong danh sách — mà danh sách xếp Cốc Cốc trước Chrome. Kết quả là
+# bấm Quét thì app mở một cửa sổ Cốc Cốc trắng trơn bên cạnh trình duyệt bạn
+# đang dùng, không cookie, không extension. Đó chính là "một đống bùi nhùi".
+CDP_BROWSER = os.environ.get("V72_CDP_BROWSER", "chrome")
+
+# ---------- Cách điều khiển trình duyệt ----------
+# "cdp" — nối vào cổng debug của Chrome ĐANG CHẠY (mặc định).
+#   Bạn mở Chrome như bình thường, đăng nhập, rồi app bám vào chính cửa sổ đó.
+#   App KHÔNG mở thêm cửa sổ nào, KHÔNG tạo profile mới.
+#   Nhược điểm đã đo: một tiến trình lạ chiếm cổng làm app tưởng Chromium sẵn
+#   sàng; "localhost" resolve ra ::1 trước 127.0.0.1 nên request có thể bị
+#   refuse; xung đột với công cụ khác cũng muốn cổng 9222. App đã có
+#   probe_port() phân biệt ba trạng thái để báo rõ từng trường hợp.
+#
+# "persistent" — Playwright tự mở trình duyệt với profile riêng của app.
+#   Không cần cổng TCP. Nhưng đây là profile MỚI: trắng trơn, không có cookie,
+#   không có extension, không có bookmark -> phải đăng nhập lại từ đầu. Đó là
+#   lý do đổi mặc định về "cdp".
+#
+# Đổi bằng biến môi trường V72_BROWSER_MODE nếu muốn thử cả hai.
+BROWSER_MODE = os.environ.get("V72_BROWSER_MODE", "cdp")
 
 # Trình duyệt dùng cho mode "persistent": "chrome" | "coccoc" | "" (tự dò).
 # "chrome" được khuyên: Cốc Cốc thường đang chạy sẵn và khoá độc quyền file

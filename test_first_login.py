@@ -127,11 +127,15 @@ class TestGuiLoginGate(unittest.TestCase):
 
         old_dir = config.DOWNLOAD_DIR
         old_prof = config.SESSION_PROFILE
+        old_mode = config.BROWSER_MODE
         tmp = tempfile.mkdtemp(prefix="nologin_")
         opened = {"n": 0}
         try:
             config.DOWNLOAD_DIR = tmp
             config.SESSION_PROFILE = tmp      # profile trống -> chưa đăng nhập
+            # Ép mode persistent để _ensure_login đọc config.SESSION_PROFILE.
+            # Ở mode cdp nó đọc profile của browser_launcher, không phải tmp.
+            config.BROWSER_MODE = "persistent"
             app = QApplication.instance() or QApplication([])
             w = gui_fluent.MainWindow(auto_browser=False)
             try:
@@ -150,6 +154,7 @@ class TestGuiLoginGate(unittest.TestCase):
         finally:
             config.DOWNLOAD_DIR = old_dir
             config.SESSION_PROFILE = old_prof
+            config.BROWSER_MODE = old_mode
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -161,6 +166,8 @@ class TestGuiLoginGate(unittest.TestCase):
 
         old_dir = config.DOWNLOAD_DIR
         old_prof = config.SESSION_PROFILE
+        old_mode = config.BROWSER_MODE
+        config.BROWSER_MODE = "persistent"
         tmp = tempfile.mkdtemp(prefix="haslogin_")
         opened = {"n": 0}
         try:
@@ -189,8 +196,78 @@ class TestGuiLoginGate(unittest.TestCase):
         finally:
             config.DOWNLOAD_DIR = old_dir
             config.SESSION_PROFILE = old_prof
+            config.BROWSER_MODE = old_mode
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestCdpBrowserSelection(unittest.TestCase):
+    """LỖI ĐÃ SỬA: launch() mở NHẦM trình duyệt.
+
+    find_browser() trả ứng viên ĐẦU TIÊN trong danh sách, mà danh sách xếp Cốc
+    Cốc trước Chrome. Nên bấm Quét thì app mở một cửa sổ Cốc Cốc trắng bên cạnh
+    trình duyệt người dùng đang dùng — đúng cái "một đống bùi nhùi".
+    """
+
+    def test_cdp_browser_config_exists(self):
+        self.assertTrue(hasattr(config, "CDP_BROWSER"))
+        self.assertEqual(config.CDP_BROWSER, "chrome",
+                         "mặc định phải là chrome, không phải coccoc")
+
+    def _capture_launch(self, **kwargs):
+        """Chạy launch() với Popen giả, trả đường dẫn exe sẽ được gọi."""
+        import browser_launcher as B
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, args, **kw):
+                captured["exe"] = args[0]
+                self.pid = 999
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                pass
+
+            def kill(self):
+                pass
+
+        real_popen = B.subprocess.Popen
+        real_probe = B.probe_port
+        B.subprocess.Popen = FakePopen
+        B.probe_port = lambda *a, **k: {"state": "closed", "detail": "", "version": None}
+        try:
+            B.launch(wait_seconds=0.2, **kwargs)
+        finally:
+            B.subprocess.Popen = real_popen
+            B.probe_port = real_probe
+        return captured.get("exe", "")
+
+    def test_launch_picks_configured_browser_not_first_candidate(self):
+        """launch() phải mở Chrome, KHÔNG phải Cốc Cốc (ứng viên đầu danh sách)."""
+        import browser_launcher as B
+        if not B.find_browser_for("chrome"):
+            self.skipTest("máy không có Chrome")
+        exe = self._capture_launch()
+        self.assertTrue(exe, "launch() không gọi Popen")
+        self.assertIn("chrome", exe.lower(),
+                      f"launch() mở nhầm trình duyệt: {exe}")
+        self.assertNotIn("coccoc", exe.lower(),
+                         "không được mở Cốc Cốc khi CDP_BROWSER='chrome'")
+
+    def test_launch_respects_browser_argument(self):
+        """Truyền browser= cụ thể phải thắng config."""
+        import browser_launcher as B
+        if not B.find_browser_for("coccoc"):
+            self.skipTest("máy không có Cốc Cốc")
+        exe = self._capture_launch(browser="coccoc")
+        self.assertIn("coccoc", exe.lower())
 
 
 class TestMemoryOptimizations(unittest.TestCase):

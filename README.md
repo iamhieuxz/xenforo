@@ -89,10 +89,40 @@ python gui_fluent.py
 
 Đặt `BROWSER_MODE` trong `config.py`.
 
-### `persistent` (mặc định) — không cần cổng
+### `cdp` (mặc định) — bám vào Chrome đang chạy
 
-Playwright tự mở trình duyệt với một profile **cố định** tại
+Bạn mở Chrome **một lần** qua script có sẵn, rồi app bám vào đúng cửa sổ đó.
+App KHÔNG mở thêm cửa sổ, KHÔNG tạo profile mới, dùng đúng cookie và extension
+của bạn.
+
+```
+open_debug_chrome.bat        (hoặc: python open_debug_chrome.py)
+```
+
+Script tự kiểm tra: cổng đã mở chưa, Chrome có đang chạy không, profile có
+cookie đăng nhập chưa. Xem trạng thái mà không mở gì:
+
+```
+python open_debug_chrome.py --check
+```
+
+> **Phải đóng hết Chrome trước.** Chrome chỉ đọc cờ `--remote-debugging-port`
+> lúc khởi động, nên cửa sổ đã mở sẽ không có cổng debug. Dữ liệu và phiên
+> đăng nhập vẫn còn — chúng nằm trong profile, không phải trong tiến trình.
+
+```python
+BROWSER_MODE = "cdp"
+CDP_BROWSER = "chrome"    # "chrome" | "coccoc" | "edge"
+CDP_PORT = 9222
+```
+
+### `persistent` — không cần cổng
+
+Playwright tự mở trình duyệt với một profile **của app** tại
 `%LOCALAPPDATA%\V72Crawler\session_<trình duyệt>`.
+
+> Đây là profile **trắng**: không cookie, không extension, không bookmark. Lần
+> đầu dùng phải đăng nhập lại từ đầu. Đó là lý do `cdp` mới là mặc định.
 
 - **Không dùng cổng TCP nào.** Playwright nói chuyện qua pipe.
 - **Đăng nhập một lần là dùng mãi.** Session lưu trong profile, sống qua các lần
@@ -217,13 +247,15 @@ xenforo/
 ├── xenforo_parse.py   # Bóc DOM XenForo (hàm thuần, không đụng mạng)
 ├── xf_selectors.py    # Regex và hằng dùng chung cho phần bóc DOM (tránh đụng stdlib selectors)
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
-├── browser_launcher.py# Dò trình duyệt, kiểm tra cổng CDP (chế độ dự phòng)
+├── browser_launcher.py# Dò trình duyệt, mở/kiểm tra cổng CDP
+├── open_debug_chrome.py # Mở Chrome ở cổng 9222 với profile có session
+├── open_debug_chrome.bat
 ├── session_source.py  # Profile trình duyệt: dò, kiểm tra khoá, copy
 ├── config.py          # Toàn bộ tham số nằm ở đây
 ├── test_v72.py        # 154 test cho core engine, parser, downloader, cache
 ├── test_review_fixes.py   # 21 test hồi quy sau đợt review
 ├── test_persistent_mode.py# 27 test cho chế độ persistent
-├── test_first_login.py    # 15 test cho đăng nhập lần đầu + bộ nhớ
+├── test_first_login.py    # 18 test cho đăng nhập lần đầu + bộ nhớ
 ├── test_gui_fluent.py     # 8 test cho giao diện Qt
 ├── _check_palette.py  # Self-check tương phản WCAG cho bảng màu Tkinter
 └── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
@@ -310,14 +342,14 @@ Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn gi�
 python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent
 ```
 
-**225 test**, chạy khoảng 16 giây:
+**228 test**, chạy khoảng 17 giây:
 
 | File | Số test | Phạm vi |
 |---|---|---|
 | `test_v72.py` | 154 | Core: bóc DOM, downloader, cache, engine |
 | `test_review_fixes.py` | 21 | Hồi quy cho các lỗi tìm thấy trong đợt review |
 | `test_persistent_mode.py` | 27 | Chế độ persistent, profile, session |
-| `test_first_login.py` | 15 | Đăng nhập lần đầu, giới hạn bộ nhớ |
+| `test_first_login.py` | 18 | Đăng nhập lần đầu, giới hạn bộ nhớ, chọn trình duyệt |
 | `test_gui_fluent.py` | 8 | Giao diện Qt |
 
 Phần lớn không cần mạng và không mở trình duyệt thật. Ba script kiểm chứng
@@ -329,6 +361,7 @@ python probe_persistent_mode.py  # 8/8   — mode persistent với trình duyệ
 python probe_no_port.py          # 7/7   — app không mở cổng ở mode persistent
 python probe_image_block.py      # 5/5   — chặn ảnh không phá parser
 python probe_log_leak.py         # 3/3   — nhật ký không phình vô hạn
+python probe_cdp_mode.py         # 6/6   — mode cdp đầu-cuối với Chrome thật
 python probe_memory.py           # đo RAM thực tế
 python audit_repro.py            # 4/4   — các lỗi P0 đã sửa
 ```

@@ -214,23 +214,38 @@ def browser_version(exe):
 
 
 def build_args(exe, pdir=None):
-    """Danh sách tham số mở cổng debug. Tách riêng để test không cần bật Chrome thật."""
-    return [exe,
+    """Danh sách tham số mở cổng debug. Tách riêng để test không cần bật Chrome thật.
+
+    `--no-sandbox` nằm trong config.SESSION_EXTRA_ARGS và đã đo được là BẮT BUỘC
+    trong một số môi trường: thiếu nó, Chrome thoát ngay với mã 0xFFFF0001
+    (2147483651) và không mở cổng nào. Trước đây build_args không hề dùng cờ
+    này nên lệnh mở Chrome luôn thất bại ở môi trường bị hạn chế quyền.
+    """
+    extra = list(getattr(config, "SESSION_EXTRA_ARGS", []) or [])
+    args = [exe,
             f"--remote-debugging-port={config.CDP_PORT}",
             f"--user-data-dir={pdir or profile_dir()}",
             *_FIRST_RUN_TAGS]
+    for flag in extra:
+        if flag and flag not in args:
+            args.append(flag)
+    return args
 
 
-def launch(exe=None, wait_seconds=25.0, on_progress=None):
+def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None):
     """Mở trình duyệt ở cổng debug. Trả (thành công, thông báo).
 
-    Khác bản cũ ở ba điểm quan trọng:
+    `browser` chọn đúng loại ("chrome"|"coccoc"); mặc định lấy config.CDP_BROWSER.
+    KHÔNG dùng find_browser() trần: hàm đó trả ứng viên đầu tiên trong danh sách
+    và danh sách xếp Cốc Cốc trước Chrome, nên app mở Cốc Cốc trắng dù người
+    dùng đang dùng Chrome. Đó là nguồn gốc của "một đống bùi nhùi".
+
+    Khác bản cũ ở ba điểm:
     1. Không tin `is_port_open()` đơn thuần. Nếu cổng bị tiến trình KHÁC chiếm,
        báo rõ "bị chiếm" thay vì im lặng trả "đã có sẵn" rồi để
        connect_over_cdp thất bại với thông báo chung chung.
     2. Nếu cổng đã có Chromium thật nhưng KHÔNG phải profile của app, vẫn dùng
-       được (người dùng có thể tự mở) nhưng phải nói rõ để họ hiểu vì sao
-       cookie/phiên đăng nhập có thể khác.
+       được nhưng phải nói rõ để hiểu vì sao cookie/phiên có thể khác.
     3. Lưu Popen object để shutdown() dọn được, và để _is_our_profile() so PID.
     """
     global _launched_process
@@ -251,9 +266,12 @@ def launch(exe=None, wait_seconds=25.0, on_progress=None):
                        f"không phải Chromium. Tắt tiến trình đó hoặc đổi CDP_PORT "
                        f"trong config.py.")
 
-    exe = find_browser(exe)
+    # Chọn ĐÚNG loại trình duyệt. Không dùng find_browser() trần (xem docstring).
     if not exe:
-        return False, ("Không tìm thấy trình duyệt. Đặt COCOC_PATH trỏ tới browser.exe "
+        want = browser or getattr(config, "CDP_BROWSER", "chrome")
+        exe = find_browser_for(want) or find_browser()
+    if not exe:
+        return False, ("Không tìm thấy trình duyệt. Đặt COCOC_PATH trỏ tới browser.exe, "
                        "hoặc sửa _BROWSER_CANDIDATES trong browser_launcher.py.")
 
     pdir = profile_dir()
