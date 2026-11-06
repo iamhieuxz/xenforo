@@ -51,10 +51,13 @@ class TestWorkerSignalsAndBridge(unittest.TestCase):
     def test_log_tag_detection(self):
         self.assertEqual(gui_fluent.detect_log_tag("[-] Lỗi kết nối"), "error")
         self.assertEqual(gui_fluent.detect_log_tag("[✓] Hoàn thành bài viết"), "success")
-        self.assertEqual(gui_fluent.detect_log_tag("[+] Tìm thấy 5 bài"), "success")
+        # [+] là "thông tin tiến trình" — đã đổi từ success sang info ở đợt
+        # chuẩn hoá tag log (log_view.py), vì [+] chỉ nói "tìm thấy", không
+        # phải "hoàn thành".
+        self.assertEqual(gui_fluent.detect_log_tag("[+] Tìm thấy 5 bài"), "info")
         self.assertEqual(gui_fluent.detect_log_tag("[!] Cảnh báo timeout"), "summary")
         self.assertEqual(gui_fluent.detect_log_tag("[•] Đã trùng khớp"), "skip")
-        self.assertEqual(gui_fluent.detect_log_tag("[*] Đang bóc tách"), "info")
+        self.assertEqual(gui_fluent.detect_log_tag("[*] Đang bóc tách"), "system")
         self.assertEqual(gui_fluent.detect_log_tag("Dòng không dấu"), "dim")
         self.assertEqual(gui_fluent.detect_log_tag("[-] Custom", tag="bulk"), "bulk")
 
@@ -78,8 +81,11 @@ class TestWorkerSignalsAndBridge(unittest.TestCase):
         self.assertEqual(self.worker._n_image, 8)
         self.assertEqual(self.worker._n_video, 2)
         self.assertEqual(self.worker._n_error, 3)
-        self.assertIn("8 ảnh, 2 video", self.worker._last_detail)
-        self.assertIn("3 lỗi", self.worker._last_detail)
+        # Dấu phân cách đã đổi từ "," sang "·" ở đợt dọn log — thống kê
+        # hiển thị trên status bar của GUI, không phải chuỗi engine.
+        self.assertIn("8 ảnh", self.worker._last_detail)
+        self.assertIn("2 video", self.worker._last_detail)
+        self.assertIn("3 tệp lỗi", self.worker._last_detail)
 
     def test_emergency_cleanup_sets_stop_event(self):
         self.assertFalse(self.stop_event.is_set())

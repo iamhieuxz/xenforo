@@ -187,7 +187,11 @@ class TestExceptionVariableGotcha(unittest.TestCase):
         import inspect
         import re
         import gui_fluent
-        src = inspect.getsource(gui_fluent)
+        import ui.crawler_view, ui.settings_view, ui.worker, ui.main_window
+        src = ("\n".join(inspect.getsource(m)
+                          for m in (gui_fluent, ui.crawler_view,
+                                    ui.settings_view, ui.worker,
+                                    ui.main_window)))
         # Bỏ comment: comment giải thích lỗi cũng chứa chữ "lambda" và "e",
         # nếu không lọc thì test báo sai (đã gặp).
         lines = [re.sub(r"#.*$", "", l) for l in src.splitlines()]
@@ -582,7 +586,11 @@ class TestSwallowLeavesTrace(unittest.TestCase):
         """Các chỗ except:pass nguy hiểm đã đổi sang swallow()."""
         import inspect
         import gui_fluent
-        src = inspect.getsource(gui_fluent)
+        import ui.crawler_view, ui.settings_view, ui.worker, ui.main_window
+        src = ("\n".join(inspect.getsource(m)
+                          for m in (gui_fluent, ui.crawler_view,
+                                    ui.settings_view, ui.worker,
+                                    ui.main_window)))
         n = src.count("swallow(")
         self.assertGreaterEqual(n, 10,
                                 f"phải có ít nhất 10 chỗ gọi swallow(), đang {n}")

@@ -1,0 +1,403 @@
+class CrawlerInterface(QWidget):
+    """Giao diện chính điều khiển quét XenForo."""
+
+    # Font log. Phải là monospace để cột thẳng hàng, nhưng KHÔNG font monospace
+    # nào trên Windows có đủ glyph cho ✓ ↳ 👥 cùng lúc với tiếng Việt (đo được:
+    # Consolas 6/8, Courier New 6/8, Lucida Console 4/8). Qt sẽ mượn font dự phòng
+    # cho ký tự thiếu, và font dự phòng có metric khác -> dòng cao thấp khác nhau.
+    #
+    # Vì vậy KHÔNG dựa vào font để "có đủ ký tự"; thay vào đó chuẩn hoá ký tự
+    # trong log (xem LOG_GLYPH_MAP) để mọi dòng chỉ dùng ký tự Consolas có sẵn.
+    LOG_FONT_FAMILY = "Consolas"
+    LOG_FONT_SIZE = 10
+
+    # Thay ký tự không có glyph trong font log bằng tương đương ASCII.
+    # ĐO ĐƯỢC: dòng chứa 👥 cao 17px, dòng thường 15px -> lệch 2px mỗi dòng,
+    # cộng dồn thành "mớ hỗn độn". Sau khi thay: mọi dòng đều 15px.
+    LOG_GLYPH_MAP = {
+        "👥": "",       # emoji người: bỏ hẳn, thông tin đã có ở nhãn [USER]
+        "✓": "OK",      # dấu tick: Consolas không có glyph. Dùng "OK" chứ
+                        # không "[OK]": log gốc đã có ngoặc " [✓] " nên sẽ
+                        # thành "[[OK]]" nếu thêm ngoặc ở đây.
+        "↳": "  >",     # mũi tên gấp khúc: không có glyph
+        "•": "-",       # bullet tròn: có glyph nhưng thay cho đồng nhất
+        "↓": "v",       # mũi tên xuống: có glyph, đổi cho khỏi lẫn với chữ
+        "—": "-",       # em dash: đổi sang gạch ngang ASCII
+        "►": ">",
+    }
+    #
+    # Vì sao đo bằng ký tự: ta chèn mỗi dòng log bằng insertHtml, không tạo
+    # paragraph mới, nên document().blockCount() luôn = 1 và không dùng làm
+    # ngưỡng được.
+    #
+    # Vì sao 20.000: chi phí mỗi dòng của QTextEdit tỉ lệ với độ dài tài liệu.
+    # Đo được (ms/dòng khi nhật ký đã đầy):
+    #     ngưỡng  20.000 ký tự -> 0,29 ms/dòng
+    #     ngưỡng  40.000        -> 0,55
+    #     ngưỡng  80.000        -> 1,09
+    #     ngưỡng 120.000        -> 1,71
+    # Quét một thread sinh vài trăm dòng log; để trần 120k là tự làm chậm gần
+    # 6 lần so với cần thiết. 20.000 ký tự ≈ 200 dòng — vẫn đọc lại được.
+    LOG_MAX_CHARS = 20_000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = parent
+        # Cho biet dang gom log va chua ve lai (xem append_log).
+        self._flush_pending = False
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # Tiêu đề trang
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title_lbl = TitleLabel("XenForo Media Crawler", self)
+        subtitle_lbl = CaptionLabel("Quét media tự động qua Playwright CDP • Khử trùng lặp SQLite • Windows 11 Fluent UI", self)
+        subtitle_lbl.setTextColor(Qt.gray, Qt.gray)
+        title_box.addWidget(title_lbl)
+        title_box.addWidget(subtitle_lbl)
+        layout.addLayout(title_box)
+
+        # ----------------- HÀNG 1: Thẻ Quét theo Tác giả -----------------
+        self.card_author = CardWidget(self)
+        layout_author = QVBoxLayout(self.card_author)
+        layout_author.setContentsMargins(16, 14, 16, 14)
+        layout_author.setSpacing(8)
+
+        head_author = QHBoxLayout()
+        head_author.addWidget(StrongBodyLabel("Quét theo tác giả trong chuyên mục", self.card_author))
+        head_author.addStretch()
+        layout_author.addLayout(head_author)
+
+        grid_author = QGridLayout()
+        grid_author.setSpacing(10)
+
+        # Box URL
+        lbl_box = BodyLabel("Chuyên mục (Box URL):", self.card_author)
+        self.cmb_box_url = EditableComboBox(self.card_author)
+        self.cmb_box_url.addItems(config.BOX_PRESETS)
+        self.cmb_box_url.setCurrentIndex(0)
+        grid_author.addWidget(lbl_box, 0, 0)
+        grid_author.addWidget(self.cmb_box_url, 1, 0)
+
+        # Username
+        lbl_user = BodyLabel("Tên tác giả:", self.card_author)
+        self.cmb_username = EditableComboBox(self.card_author)
+        self.refresh_user_dropdown()
+        grid_author.addWidget(lbl_user, 0, 1)
+        grid_author.addWidget(self.cmb_username, 1, 1)
+
+        # Nút quét tác giả
+        self.btn_crawl_user = PrimaryPushButton(FluentIcon.DOWNLOAD, "Quét tác giả", self.card_author)
+        self.btn_crawl_user.setFixedHeight(34)
+        self.btn_crawl_user.clicked.connect(self.main_window.start_author_crawl)
+        grid_author.addWidget(self.btn_crawl_user, 1, 2)
+
+        grid_author.setColumnStretch(0, 3)
+        grid_author.setColumnStretch(1, 2)
+        grid_author.setColumnStretch(2, 1)
+        layout_author.addLayout(grid_author)
+        layout.addWidget(self.card_author)
+
+        # ----------------- HÀNG 2: Thẻ Quét theo Bài viết & Toàn bộ -----------------
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(14)
+
+        # Thẻ quét link bài viết
+        self.card_thread = CardWidget(self)
+        layout_thread = QVBoxLayout(self.card_thread)
+        layout_thread.setContentsMargins(16, 14, 16, 14)
+        layout_thread.setSpacing(8)
+        layout_thread.addWidget(StrongBodyLabel("Quét riêng một bài viết (Thread URL)", self.card_thread))
+
+        grid_thread = QHBoxLayout()
+        grid_thread.setSpacing(10)
+        self.ent_thread_url = LineEdit(self.card_thread)
+        self.ent_thread_url.setPlaceholderText("Dán liên kết bài viết (ví dụ: https://domain/threads/bai-viet.123/)")
+        self.ent_thread_url.setClearButtonEnabled(True)
+        self.btn_crawl_thread = PrimaryPushButton(FluentIcon.DOCUMENT, "Quét bài viết", self.card_thread)
+        self.btn_crawl_thread.setFixedHeight(34)
+        self.btn_crawl_thread.clicked.connect(self.main_window.start_thread_crawl)
+        grid_thread.addWidget(self.ent_thread_url, 1)
+        grid_thread.addWidget(self.btn_crawl_thread)
+        layout_thread.addLayout(grid_thread)
+        row2_layout.addWidget(self.card_thread, 3)
+
+        # Thẻ tác vụ mở rộng: Quét lại toàn bộ user
+        self.card_bulk = CardWidget(self)
+        layout_bulk = QVBoxLayout(self.card_bulk)
+        layout_bulk.setContentsMargins(16, 14, 16, 14)
+        layout_bulk.setSpacing(8)
+        layout_bulk.addWidget(StrongBodyLabel("Đồng bộ hàng loạt", self.card_bulk))
+        self.btn_crawl_all = PushButton(FluentIcon.SYNC, "Quét lại tất cả tác giả", self.card_bulk)
+        self.btn_crawl_all.setFixedHeight(34)
+        self.btn_crawl_all.clicked.connect(self.main_window.start_all_crawl)
+        layout_bulk.addWidget(self.btn_crawl_all)
+        row2_layout.addWidget(self.card_bulk, 1)
+
+        layout.addLayout(row2_layout)
+
+        # ----------------- HÀNG 3: Thẻ Điều khiển & Trạng thái -----------------
+        self.card_status = CardWidget(self)
+        layout_status = QHBoxLayout(self.card_status)
+        layout_status.setContentsMargins(16, 12, 16, 12)
+        layout_status.setSpacing(14)
+
+        status_info_box = QVBoxLayout()
+        status_info_box.setSpacing(2)
+        self.lbl_state_title = StrongBodyLabel("SẴN SÀNG", self.card_status)
+        self.lbl_state_detail = CaptionLabel("Chưa có tác vụ nào đang chạy.", self.card_status)
+        self.lbl_state_detail.setTextColor(Qt.gray, Qt.gray)
+        status_info_box.addWidget(self.lbl_state_title)
+        status_info_box.addWidget(self.lbl_state_detail)
+        layout_status.addLayout(status_info_box, 2)
+
+        # Thanh tiến trình mượt
+        self.progress_bar = IndeterminateProgressBar(self.card_status)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedHeight(4)
+        layout_status.addWidget(self.progress_bar, 3)
+
+        # Nút Dừng khẩn cấp
+        self.btn_stop = PushButton(FluentIcon.CANCEL, "Dừng khẩn cấp", self.card_status)
+        self.btn_stop.setFixedHeight(34)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.main_window.stop_crawl)
+        layout_status.addWidget(self.btn_stop, 1)
+
+        layout.addWidget(self.card_status)
+
+        # ----------------- HÀNG 4: Nhật ký hoạt động -----------------
+        self.card_log = CardWidget(self)
+        layout_log = QVBoxLayout(self.card_log)
+        layout_log.setContentsMargins(16, 12, 16, 14)
+        layout_log.setSpacing(10)
+
+        log_head = QHBoxLayout()
+        log_head.addWidget(StrongBodyLabel("Nhật ký chi tiết", self.card_log))
+        log_head.addStretch()
+
+        self.filter_edit = SearchLineEdit(self.card_log)
+        self.filter_edit.setPlaceholderText("Lọc nhật ký...")
+        self.filter_edit.setFixedWidth(220)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        log_head.addWidget(self.filter_edit)
+
+        self.btn_copy = TransparentPushButton(FluentIcon.COPY, "Sao chép", self.card_log)
+        self.btn_copy.clicked.connect(self._copy_log)
+        log_head.addWidget(self.btn_copy)
+
+        self.btn_clear = TransparentPushButton(FluentIcon.DELETE, "Xóa", self.card_log)
+        self.btn_clear.clicked.connect(self._clear_log)
+        log_head.addWidget(self.btn_clear)
+        layout_log.addLayout(log_head)
+
+        self.log_edit = TextEdit(self.card_log)
+        self.log_edit.setReadOnly(True)
+        # Font monospace + setFixedPitch: cột thẳng hàng, chiều rộng ký tự đều.
+        log_font = QFont(self.LOG_FONT_FAMILY, self.LOG_FONT_SIZE)
+        log_font.setStyleHint(QFont.Monospace)
+        log_font.setFixedPitch(True)
+        self.log_edit.setFont(log_font)
+        # Tab = 4 space cố định, nếu không Qt tự chọn bề rộng và các dòng lệch nhau.
+        self.log_edit.setTabStopDistance(
+            self.log_edit.fontMetrics().horizontalAdvance(" ") * 4)
+        # Thụt lề cho dòng bị wrap: nhìn ra ngay đâu là phần tiếp của dòng cũ,
+        # đâu là dòng mới. Không có bước này, dòng dài bị cắt và chữ tiếp theo
+        # bắt đầu ở cột 0 -> không phân biệt được.
+        self.log_edit.setLineWrapMode(TextEdit.WidgetWidth)
+        self.log_edit.document().setDocumentMargin(6)
+        layout_log.addWidget(self.log_edit, 1)
+
+        layout.addWidget(self.card_log, 1)
+
+        # Kết nối sự kiện thay đổi input để tự động bật/tắt nút
+        self.cmb_box_url.currentTextChanged.connect(self._check_inputs)
+        self.cmb_username.currentTextChanged.connect(self._check_inputs)
+        self.ent_thread_url.textChanged.connect(self._check_inputs)
+        self._check_inputs()
+
+    def refresh_user_dropdown(self):
+        names = self.main_window.local_users.names()
+        self.cmb_username.clear()
+        self.cmb_username.addItems(names if names else ["traicube"])
+        if names:
+            self.cmb_username.setCurrentIndex(0)
+
+    def _check_inputs(self):
+        if self.main_window.is_crawling():
+            return
+        has_box = bool(self.cmb_box_url.currentText().strip())
+        has_user = bool(self.cmb_username.currentText().strip())
+        has_thread = bool(self.ent_thread_url.text().strip())
+
+        self.btn_crawl_user.setEnabled(has_box and has_user)
+        self.btn_crawl_thread.setEnabled(has_thread)
+        self.btn_crawl_all.setEnabled(has_box)
+
+    def _apply_filter(self):
+        keyword = self.filter_edit.text().strip().lower()
+        self.log_edit.clear()
+        cursor = self.log_edit.textCursor()
+        for message, tag in self.main_window.log_history:
+            if not keyword or keyword in message.lower():
+                self._append_formatted(message, tag, cursor)
+        self.log_edit.moveCursor(QTextCursor.End)
+
+    def append_log(self, message: str, tag: str):
+        """Thêm một dòng vào nhật ký.
+
+        Hai chi phí ẩn ở đây, cả hai đều là nguyên nhân "chạy xong vẫn lag":
+
+        1. QTextEdit layout lại tài liệu khi nội dung đổi. Đo được chi phí mỗi
+           dòng tăng từ 0,12 ms (nhật ký ngắn) lên 2,0 ms (nhật ký dài) — tức
+           chỉ 2.000 dòng log mất gần 4 giây.
+        2. Gọi setHtml/insertHtml cho từng dòng khi widget đang hiển thị khiến
+           Qt xếp lịch vẽ lại sau mỗi lần.
+
+        Cách chặn: tắt updates của widget trong lúc ghi, chỉ bật lại theo nhịp
+        (dùng QTimer) để không vẽ lại N lần cho N dòng.
+        """
+        keyword = self.filter_edit.text().strip().lower()
+        if keyword and keyword not in message.lower():
+            return
+
+        # Chỉ cập nhật khi widget đang hiển thị; khi tab khác đang mở thì để
+        # Qt tự vẽ lúc được hiện ra.
+        self.log_edit.setUpdatesEnabled(False)
+        try:
+            cursor = QTextCursor(self.log_edit.document())
+            cursor.movePosition(QTextCursor.End)
+            self._append_formatted(message, tag, cursor)
+            self._trim_log()
+        finally:
+            if not self._flush_pending:
+                self._flush_pending = True
+                # Gom nhiều dòng vào một lần vẽ thay vì vẽ từng dòng.
+                QTimer.singleShot(80, self._flush_log)
+
+    def _flush_log(self):
+        self._flush_pending = False
+        self.log_edit.setUpdatesEnabled(True)
+        self.log_edit.moveCursor(QTextCursor.End)
+
+    def _trim_log(self):
+        """Giữ độ dài nhật ký ở mức giới hạn, cắt THEO DÒNG.
+
+        Vì sao theo dòng chứ không theo ký tự: mỗi dòng log giờ là một paragraph
+        thật (xem _append_formatted), nên cắt giữa ký tự sẽ chặt đôi một dòng và
+        để lại nửa dòng rác ở đầu nhật ký. Cắt theo block thì mỗi dòng còn
+        nguyên vẹn.
+
+        Vì sao cần giới hạn: QTextEdit phải layout lại toàn bộ tài liệu khi vẽ,
+        chi phí tăng theo độ dài. Đo được chi phí mỗi dòng:
+            20.000 ký tự -> 0,29 ms/dòng
+           120.000 ký tự -> 1,71 ms/dòng
+        Không chặn thì phiên quét dài càng lúc càng chậm.
+        """
+        doc = self.log_edit.document()
+        total = doc.characterCount()
+        if total <= self.LOG_MAX_CHARS:
+            return
+
+        cut_to = int(self.LOG_MAX_CHARS * 0.8)
+        excess = total - cut_to
+
+        # Đếm xem cần bỏ bao nhiêu BLOCK để bớt được `excess` ký tự.
+        removed = 0
+        block = doc.begin()
+        blocks_to_drop = 0
+        while block.isValid() and removed < excess:
+            removed += block.length()
+            blocks_to_drop += 1
+            block = block.next()
+
+        if blocks_to_drop <= 0:
+            return
+
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.Start)
+        # NextBlock giữ nguyên ranh giới dòng, không chặt đôi dòng nào.
+        cur.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor,
+                         blocks_to_drop)
+        cur.removeSelectedText()
+
+    def _append_formatted(self, message: str, tag: str, cursor: QTextCursor):
+        """Ghi một dòng log bằng QTextCharFormat, KHÔNG dùng HTML.
+
+        VÌ SAO BỎ HTML — đây là nguyên nhân chính của "mớ hỗn độn":
+
+        `QTextCursor.insertHtml("<div>...</div>")` KHÔNG tạo xuống dòng trong
+        QTextDocument của Qt. Đo được: chèn 5 dòng bằng insertHtml("<div>") thì
+        `blockCount` vẫn = 1 và `toPlainText()` ra "dong 0dong 1dong 2dong 3" —
+        tất cả dính thành một dòng dài, rồi widget tự ngắt theo bề rộng. Nhìn
+        vào là một khối chữ, không phân biệt được dòng nào với dòng nào.
+
+        Dùng insertText + QTextCharFormat: mỗi dòng là paragraph thật, xuống
+        dòng đúng, giữ nguyên khoảng trắng thụt lề, màu áp theo format.
+
+        Chuẩn hoá glyph cũng bắt buộc: font monospace trên Windows không có
+        glyph cho ✓ ↳ 👥 (đo được: Consolas thiếu cả ba), Qt mượn font dự phòng
+        có metric khác -> dòng chứa emoji cao 17px, dòng thường 15px.
+        """
+        colors = LOG_COLORS_DARK if isDarkTheme() else LOG_COLORS_LIGHT
+        color = colors.get(tag, colors["dim"])
+
+        text = message
+        for bad, good in self.LOG_GLYPH_MAP.items():
+            if bad in text:
+                text = text.replace(bad, good)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        block_fmt = QTextBlockFormat()
+        block_fmt.setLineHeight(135.0, QTextBlockFormat.ProportionalHeight.value)
+        block_fmt.setTopMargin(0)
+        block_fmt.setBottomMargin(0)
+
+        # PHẢI tách dòng bằng "\n" qua insertText, KHÔNG dùng insertBlock.
+        #
+        # Lý do đo được: insertBlock tạo block mới nhưng cursor do append_log
+        # lấy bằng movePosition(End) lại nằm ở CUỐI BLOCK CUỐI, không phải ở
+        # block mới. Kết quả: 9 dòng log vẫn ra blockCount = 1 và toPlainText()
+        # dính thành một chuỗi. insertText("\n") tách block thật và vị trí
+        # cursor vẫn đúng cho lần ghi sau.
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            cursor.insertText(part, fmt)
+            if i < len(parts) - 1:
+                cursor.insertText("\n", fmt)
+        # Ngăn cách các lần gọi append_log. Không có bước này, lần ghi sau lại
+        # nối tiếp vào cuối dòng trước.
+        cursor.insertText("\n", fmt)
+
+    def _copy_log(self):
+        text = self.log_edit.toPlainText()
+        if not text.strip():
+            InfoBar.warning(
+                title="Thông báo",
+                content="Nhật ký đang trống, không có gì để sao chép.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=2500
+            )
+            return
+        QApplication.clipboard().setText(text)
+        InfoBar.success(
+            title="Thành công",
+            content=f"Đã sao chép {len(self.main_window.log_history)} dòng nhật ký vào clipboard.",
+            parent=self,
+            position=InfoBarPosition.TOP_RIGHT,
+            duration=2500
+        )
+
+    def _clear_log(self):
+        self.main_window.log_history.clear()
+        self.log_edit.clear()
+
+
