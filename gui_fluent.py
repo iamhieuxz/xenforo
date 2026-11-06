@@ -38,6 +38,7 @@ from qfluentwidgets import (
 
 import config
 import browser_launcher
+import session_log
 import session_source
 from cache import MediaCache, LocalUserIndex
 from engine import CrawlerEngine
@@ -753,7 +754,19 @@ class SettingsInterface(QWidget):
         `xf_user` xuất hiện (người dùng đăng nhập xong và đóng trình duyệt),
         báo để họ bấm Quét lại.
         """
-        browser = (config.SESSION_BROWSER or "chrome").lower()
+        # PHẢI theo ĐÚNG mode đang chạy. Bản trước luôn dùng SESSION_BROWSER
+        # (chrome) + resolve_profile() (profile riêng của app), nên ở mode cdp
+        # (mặc định, dùng Cốc Cốc + profile thật) nút Đăng nhập lại mở Chrome
+        # với một profile TẠM — đăng nhập xong cookie ghi vào chỗ khác, và lần
+        # quét sau vẫn không thấy phiên. Đo được: mode=cdp/coccoc nhưng nút mở
+        # chrome + F:\XENFORO2\tmp....
+        mode = (getattr(config, "BROWSER_MODE", "cdp") or "cdp").lower()
+        if mode == "cdp":
+            browser = (getattr(config, "CDP_BROWSER", "coccoc") or "coccoc").lower()
+            prof = browser_launcher.profile_dir()
+        else:
+            browser = (config.SESSION_BROWSER or "chrome").lower()
+            prof = session_source.resolve_profile(browser)
         exe = browser_launcher.find_browser_for(browser)
         if not exe:
             InfoBar.error(
@@ -762,8 +775,6 @@ class SettingsInterface(QWidget):
                         f"trong config.py.",
                 parent=self, position=InfoBarPosition.TOP_RIGHT, duration=6000)
             return
-
-        prof = session_source.resolve_profile(browser)
 
         # Profile mặc định của trình duyệt đang chạy -> không mở được (khoá).
         installed = session_source.find_installed_profiles().get(browser, {}).get("path", "")
@@ -789,13 +800,19 @@ class SettingsInterface(QWidget):
                 args += list(getattr(config, "SESSION_EXTRA_ARGS", []) or [])
                 # KHÔNG headless: người dùng cần thấy cửa sổ để đăng nhập.
                 proc = subprocess.Popen(args)
-                QTimer.singleShot(
-                    0, lambda: self._on_login_opened(browser, prof, wait_for_login))
+                # Phat signal thay vi QTimer.singleShot: QTimer tao trong thread
+                # khong co event loop thi khong bao gio chay (da do).
+                self.main_window.sig_ui_login_opened.emit(
+                    browser, prof, bool(wait_for_login))
             except Exception as e:
-                QTimer.singleShot(0, lambda: InfoBar.error(
-                    title="Không mở được",
-                    content=f"{type(e).__name__}: {e}",
-                    parent=self, position=InfoBarPosition.TOP_RIGHT, duration=6000))
+                # PHẢI tính chuỗi LỜI NGAY tại đây (trong except), không để lambda
+                # tự đọc `e`. Ở Python 3, biến `e` bị XOÁ khi ra khỏi khối except,
+                # nên lambda chạy sau (qua QTimer) ném NameError: name 'e' is not
+                # defined. Đo được: lỗi này xảy ra đúng khi mở trình duyệt thất
+                # bại — tức lúc cần thông báo lỗi nhất thì app lại crash thêm.
+                msg = f"{type(e).__name__}: {e}"
+                self.main_window.sig_ui_notify.emit(
+                    "error", "Không mở được", msg, 6000)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -869,7 +886,10 @@ class SettingsInterface(QWidget):
 
         def work():
             ok, msg = browser_launcher.launch()
-            QTimer.singleShot(0, lambda: self._on_browser_launched(ok, msg))
+            self.main_window.sig_ui_notify.emit(
+                "success" if ok else "error",
+                "Khởi động thành công" if ok else "Khởi động thất bại",
+                msg, 3500 if ok else 5000)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -895,6 +915,18 @@ class SettingsInterface(QWidget):
 class MainWindow(MSFluentWindow):
     """Cửa sổ chính của ứng dụng với thiết kế Fluent Design chuẩn Windows 11."""
 
+    # Signal để worker thread báo về GUI thread. PHẢI dùng Signal, không dùng
+    # QTimer.singleShot: QTimer tạo trong thread không có Qt event loop thì
+    # KHÔNG BAO GIỜ chạy. Đo được: singleShot từ main thread fired=1, từ worker
+    # thread fired=0. Hệ quả trước đây: mọi thông báo (mở trình duyệt thành
+    # công, thất bại, log từ thread) đều im lặng biến mất.
+    #
+    # Signal phát từ thread khác được Qt xếp hàng và giao cho GUI thread —
+    # đây là cơ chế đúng, thread-safe.
+    sig_ui_notify = Signal(str, str, str, int)   # (kind, title, content, ms)
+    sig_ui_login_opened = Signal(str, str, bool)  # (browser, profile, wait)
+    sig_ui_log = Signal(str, str)                 # (message, tag)
+
     def __init__(self, auto_browser: bool = True):
         super().__init__()
         self.setWindowTitle("XenForo Crawler — V72 Fluent")
@@ -912,6 +944,19 @@ class MainWindow(MSFluentWindow):
         self.worker: Optional[CrawlWorker] = None
         self.log_history = []  # Lưu (message, tag)
 
+        # Ghi nhật ký ra file để xem lại được sau khi đóng app.
+        # Bản trước chỉ giữ trong RAM nên khi người dùng báo "có 7 lỗi" thì
+        # không còn gì để đọc — mọi chẩn đoán phải đoán lại.
+        self.session_log = None
+        if getattr(config, "LOG_TO_FILE", True):
+            try:
+                self.session_log = session_log.SessionLog(
+                    log_dir=getattr(config, "LOG_DIR", None),
+                    keep=getattr(config, "LOG_KEEP_SESSIONS", 30),
+                    min_level=getattr(config, "LOG_MIN_LEVEL", "DEBUG"))
+            except Exception:
+                self.session_log = None
+
         # Thiết lập theme ban đầu
         saved_theme = self.load_theme_setting()
         if saved_theme == "light":
@@ -928,6 +973,12 @@ class MainWindow(MSFluentWindow):
         self.settings_interface.setObjectName("settingsInterface")
 
         self.init_navigation()
+
+        # Nối signal -> handler. Qt tự chọn QueuedConnection vì phát từ thread
+        # khác, nên handler luôn chạy trên GUI thread.
+        self.sig_ui_notify.connect(self._on_ui_notify)
+        self.sig_ui_login_opened.connect(self._on_login_opened_ui)
+        self.sig_ui_log.connect(self.append_log)
 
         # Tự động nạp trình duyệt nếu cấu hình bật
         if auto_browser and config.AUTO_LAUNCH_BROWSER:
@@ -1054,15 +1105,40 @@ class MainWindow(MSFluentWindow):
         def work():
             ok, msg = browser_launcher.launch()
             tag = "system" if ok else "error"
-            symbol = "✓" if ok else "!"
-            QTimer.singleShot(0, lambda: self.append_log(f"[{symbol}] {msg}", tag))
+            symbol = "OK" if ok else "!"
+            self.sig_ui_log.emit(f"[{symbol}] {msg}", tag)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_ui_notify(self, kind: str, title: str, content: str, ms: int):
+        """Handler cho thông báo phát từ worker thread. Chạy trên GUI thread."""
+        fn = {"error": InfoBar.error, "warn": InfoBar.warning,
+              "success": InfoBar.success, "info": InfoBar.info}.get(kind,
+                                                                   InfoBar.info)
+        try:
+            fn(title=title, content=content, parent=self,
+               position=InfoBarPosition.TOP_RIGHT, duration=ms or 4000)
+        except Exception:
+            pass
+
+    def _on_login_opened_ui(self, browser: str, prof: str, wait: bool):
+        """Handler cho việc mở cửa sổ đăng nhập. Chạy trên GUI thread."""
+        try:
+            self.settings_interface._on_login_opened(browser, prof, wait)
+        except Exception:
+            pass
 
     def append_log(self, message: str, tag: str = "info"):
         self.log_history.append((message, tag))
         if len(self.log_history) > 1500:
             self.log_history = self.log_history[-1500:]
+        # Ghi ra file TRƯỚC khi vẽ: nếu giao diện treo hoặc app bị kill, file
+        # vẫn còn dòng cuối. Không để việc vẽ chặn việc ghi log.
+        if self.session_log is not None:
+            try:
+                self.session_log.write(message, tag)
+            except Exception:
+                pass
         self.crawler_interface.append_log(message, tag)
     def _theme_file_path(self) -> str:
         candidates = [
@@ -1335,6 +1411,17 @@ class MainWindow(MSFluentWindow):
             browser_launcher.shutdown()
         except Exception:
             pass
+        # Đóng log SAU CÙNG để còn ghi được lỗi ở các bước dọn dẹp trên.
+        # Summary giúp biết ngay phiên đó có bao nhiêu lỗi mà không phải grep.
+        if getattr(self, "session_log", None) is not None:
+            try:
+                ci = self.crawler_interface
+                summary = (f"nhật ký UI: {ci.log_edit.document().blockCount()} dòng | "
+                           f"lỗi: {self.session_log.error_count} | "
+                           f"cảnh báo: {self.session_log.warn_count}")
+                self.session_log.close(summary)
+            except Exception:
+                pass
         event.accept()
 
 
@@ -1346,7 +1433,29 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+
+    # Bắt exception không xử lý được. Mặc định Python chỉ in ra stderr; chạy
+    # bằng .bat thì cửa sổ đóng là mất sạch, không biết app chết vì gì.
+    def _excepthook(exc_type, exc, tb):
+        try:
+            if window.session_log is not None:
+                window.session_log.exception("main", exc)
+        except Exception:
+            pass
+        # Vẫn in ra console để chạy từ terminal thấy ngay.
+        import traceback as _tb
+        _tb.print_exception(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
+
+    exit_code = app.exec()
+    # Đóng log cả khi thoát bình thường lẫn khi lỗi.
+    if window.session_log is not None:
+        try:
+            window.session_log.close(f"mã thoát: {exit_code}")
+        except Exception:
+            pass
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -144,6 +144,14 @@ class Downloader:
         self.semaphore = semaphore
         self.db_lock = db_lock
         self.active_tasks = set()
+        # Cookie lấy từ phiên trình duyệt (engine.load_cookies gán vào).
+        # PHẢI khởi tạo ở đây: `_fetch_streaming` đọc thuộc tính này, nên thiếu
+        # nó là AttributeError ở MỌI lần tải. Lỗi đó từng làm toàn bộ media
+        # không tải được mà thống kê vẫn báo "0 lỗi" — xem ghi chú ở counted().
+        self._cookie_header = ""
+        # Ghi lại exception của task tải. Cần vì trước đây lỗi loại này chỉ
+        # hiện ra stderr, không vào log, không vào thống kê.
+        self._task_errors = []
 
     def clone_cached(self, src, dst):
         """Tái sử dụng file đã tải: hardlink = 0 byte I/O. Copy nếu FS không hỗ trợ."""
@@ -298,8 +306,18 @@ class Downloader:
 
             # ---- Đường nhanh: HTTP streaming ----
             if _fast_fetch is not None and getattr(config, "USE_HTTP_FIRST", True):
-                done = await self._fetch_streaming(url, save_path, referer_url,
-                                                   url_hash_)
+                try:
+                    done = await self._fetch_streaming(url, save_path, referer_url,
+                                                       url_hash_)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # Không để lỗi ở đường nhanh làm chết cả lượt tải: ghi lại
+                    # rồi thử đường trình duyệt. Bản trước không bọc, nên một
+                    # AttributeError ở đây làm task chết mà không ai biết.
+                    self.log(f"   [!] Lỗi tải nhanh ({type(e).__name__}): "
+                             f"{url[:60]}")
+                    done = None
                 if done is not None:
                     return done
                 # None = HTTP không dùng được -> rơi về Playwright bên dưới.
@@ -519,7 +537,18 @@ class Downloader:
         state = {"ok": 0, "failed": 0, "image": 0, "video": 0, "file": 0}
 
         def counted(fut):
-            r = fut.result() if not fut.cancelled() else None
+            # PHẢI bọc fut.result() trong try. Bản trước gọi trực tiếp, nên nếu
+            # task ném exception thì chính callback này ném theo -> asyncio chỉ
+            # ghi "Exception in callback" ra stderr, còn state["failed"] KHÔNG
+            # tăng. Đo được: 2 task cùng ném AttributeError -> gather trả
+            # {'ok': 0, 'failed': 0} và app báo "0 mới, 0 lỗi" trong khi không
+            # file nào được tải. Lỗi hoàn toàn im lặng.
+            try:
+                r = None if fut.cancelled() else fut.result()
+            except Exception as exc:
+                r = None
+                self._task_errors.append(f"{type(exc).__name__}: {exc}")
+
             if r == "OK":
                 state["ok"] += 1
                 state[getattr(fut, "kind", "file")] += 1
@@ -527,12 +556,14 @@ class Downloader:
                 # Hết giờ là lỗi thật, phải hiện trong thống kê. Bản cũ trả
                 # "CANCELLED" cho cả trường hợp này nên file biến mất không dấu vết.
                 state["failed"] += 1
-            elif r == "FAILED" or (isinstance(r, BaseException)
-                                  and not self.stop_event.is_set()):
+            elif r is None and fut.cancelled():
+                pass                      # người dùng bấm Dừng: không tính lỗi
+            else:
+                # "FAILED", hoặc exception từ task (r=None nhưng không cancelled).
                 state["failed"] += 1
             state["done"] = state.get("done", 0) + 1
             if state["done"] % self.PROGRESS_EVERY == 0:
-                self.log(f"      ↳ {state['done']}/{total} tệp xong"
+                self.log(f"      v {state['done']}/{total} tệp xong"
                           f" ({state['ok']} mới, {state['failed']} lỗi)", "info")
 
         for t in tasks:
@@ -540,6 +571,9 @@ class Downloader:
 
         await asyncio.gather(*tasks, return_exceptions=True)
         state.pop("done", None)
+        if self._task_errors:
+            state["task_errors"] = self._task_errors[:5]
+            self._task_errors.clear()
         return state
 
     def cancel_all(self):

@@ -268,6 +268,8 @@ xenforo/
 ├── browser_launcher.py# Dò trình duyệt, mở/kiểm tra cổng CDP
 ├── open_debug_chrome.py # Mở Chrome ở cổng 9222 với profile có session
 ├── fast_fetch.py       # Tải HTML song song bằng HTTP (nhanh hơn trình duyệt)
+├── session_log.py      # Ghi nhật ký phiên ra file để debug
+├── check_log.py        # Đọc/lọc nhật ký phiên đã qua
 ├── open_debug_chrome.bat
 ├── session_source.py  # Profile trình duyệt: dò, kiểm tra khoá, copy
 ├── config.py          # Toàn bộ tham số nằm ở đây
@@ -413,13 +415,48 @@ rphang.show dùng add-on SAM chèn quảng cáo **bên trong** `message-body`. �
 một thread: 9 khối `samCodeUnit`/`samItem`. Đã gộp vào `_strip_junk` — kiểm
 chứng: 9 khối bị gỡ, 39 ảnh + 56 video thật giữ nguyên.
 
+## Nhật ký và debug
+
+Mỗi phiên ghi một file riêng: `<thư mục tải>/logs/session-YYYYMMDD-HHMMSS.log`.
+Ghi ngay sau từng dòng (flush) nên app bị kill vẫn còn log tới dòng cuối.
+
+Đọc lại phiên gần nhất:
+
+```
+python check_log.py                 # tóm tắt + lỗi
+python check_log.py --all           # liệt kê mọi phiên
+python check_log.py --tail 80       # 80 dòng cuối
+python check_log.py --level ERROR   # chỉ lỗi
+```
+
+Mỗi dòng có mức (DEBUG/INFO/WARN/ERROR), thời gian và tag:
+
+```
+16:33:37.773 INFO  [system  ] [*] Bắt đầu quét
+16:33:37.773 ERROR [-] [-] Lỗi tải tệp: timeout
+16:33:37.773 WARN  [-] [!] Bỏ qua 3 tệp
+```
+
+Phân loại tự động dựa trên nội dung, không chỉ tag — vì engine log
+`log("[-] Lỗi ...")` mà không truyền tag, nên nếu chỉ dựa tag thì những lỗi
+quan trọng nhất sẽ bị xếp vào INFO và bị lọc mất.
+
+Cấu hình trong `config.py`:
+
+```python
+LOG_DIR = os.path.join(DOWNLOAD_DIR, "logs")
+LOG_KEEP_SESSIONS = 30      # giữ 30 phiên gần nhất
+LOG_MIN_LEVEL = "DEBUG"     # DEBUG | INFO | WARN | ERROR
+LOG_TO_FILE = True
+```
+
 ## Kiểm thử
 
 ```bash
-python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent
+python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent test_review_round2
 ```
 
-**228 test**, chạy khoảng 17 giây:
+**243 test**, chạy khoảng 35 giây:
 
 | File | Số test | Phạm vi |
 |---|---|---|
@@ -427,6 +464,7 @@ python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_lo
 | `test_review_fixes.py` | 21 | Hồi quy cho các lỗi tìm thấy trong đợt review |
 | `test_persistent_mode.py` | 27 | Chế độ persistent, profile, session |
 | `test_first_login.py` | 18 | Đăng nhập lần đầu, giới hạn bộ nhớ, chọn trình duyệt |
+| `test_review_round2.py` | 15 | Hồi quy: cookie header, signal vs QTimer, log file |
 | `test_gui_fluent.py` | 8 | Giao diện Qt |
 
 Phần lớn không cần mạng và không mở trình duyệt thật. Ba script kiểm chứng

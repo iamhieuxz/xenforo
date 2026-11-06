@@ -791,6 +791,12 @@ class CrawlerEngine:
 
         if failed:
             self.log(f"   [!] Cảnh báo: {failed} tệp lỗi đường truyền trong bài này.")
+        # Exception từ task tải (không phải HTTP lỗi). Trước đây loại này chỉ
+        # hiện ra stderr, không vào log, không vào thống kê — nên khi tải hỏng
+        # hoàn toàn mà app vẫn báo "0 lỗi". Giờ in ra kèm loại lỗi để biết ngay
+        # là lỗi code hay lỗi mạng.
+        for err in (stats.get("task_errors") or [])[:3]:
+            self.log(f"   [!] Lỗi xử lý tệp: {err}")
         if downloaded:
             self.log(f"   [✓] {author.upper()}: Bài {idx} tải mới "
                      + count_files(stats) + ctx)

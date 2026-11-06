@@ -5,6 +5,25 @@ import os
 # Thư mục gốc. Trỏ biến môi trường RPHANG_DIR để chạy thử không cần sửa code.
 DOWNLOAD_DIR = os.environ.get('RPHANG_DIR', r"E:\HIDE\RPHANG")
 
+# ---------- Nhật ký ra file ----------
+# Bản trước chỉ giữ log trong RAM nên đóng app là mất. Khi cần debug một phiên
+# đã qua thì không còn gì để đọc — mọi chẩn đoán phải đoán lại. Đây là lý do
+# có các thiết lập dưới.
+#
+# Mỗi phiên một file, tên có timestamp: session-20261106-143812.log
+# Ghi ngay sau từng dòng (flush) để app bị kill vẫn còn log tới dòng cuối.
+LOG_DIR = os.environ.get("V72_LOG_DIR") or os.path.join(DOWNLOAD_DIR, "logs")
+
+# Số phiên giữ lại. Mỗi phiên vài trăm KB; 30 phiên khoảng vài MB.
+LOG_KEEP_SESSIONS = 30
+
+# Mức thấp nhất được ghi: DEBUG | INFO | WARN | ERROR.
+# DEBUG ghi cả dòng "bỏ qua", "trùng" — hữu ích khi rà lỗi, nhưng file to hơn.
+LOG_MIN_LEVEL = os.environ.get("V72_LOG_LEVEL", "DEBUG")
+
+# Tắt hẳn ghi file (đặt V72_LOG_FILE=0) nếu không muốn tạo thư mục logs.
+LOG_TO_FILE = os.environ.get("V72_LOG_FILE", "1") not in ("0", "false", "False")
+
 # Chrome phải chạy --remote-debugging-port=9222
 # Đặt CDP_PORT trước rồi suy ra URL. Trước đây hai giá trị là hai literal độc
 # lập: đổi CDP_PORT sang 9333 thì CDP_URL vẫn là localhost:9222 -> app nói
