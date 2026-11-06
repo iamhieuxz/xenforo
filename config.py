@@ -41,13 +41,24 @@ CDP_URL = f"http://{CDP_HOST}:{CDP_PORT}"
 AUTO_LAUNCH_BROWSER = True
 BROWSER_PROFILE = "v72_crawl"   # profile riêng của app (mặc định)
 
-# Trình duyệt dùng cho mode CDP: "chrome" | "coccoc" | "edge".
+# ---------- Trình duyệt dùng chung ----------
+# MỘT biến duy nhất quyết định trình duyệt, cho CẢ HAI mode (cdp và persistent).
 #
-# Vì sao cần khai báo rõ: trước đây launch() gọi find_browser() và lấy ứng viên
-# ĐẦU TIÊN trong danh sách — mà danh sách xếp Cốc Cốc trước Chrome. Kết quả là
-# bấm Quét thì app mở một cửa sổ Cốc Cốc trắng trơn bên cạnh trình duyệt bạn
-# đang dùng, không cookie, không extension. Đó chính là "một đống bùi nhùi".
-CDP_BROWSER = os.environ.get("V72_CDP_BROWSER", "coccoc")
+# VÌ SAO GỘP: bản trước có CDP_BROWSER="coccoc" và SESSION_BROWSER="chrome" —
+# hai giá trị LỆCH NHAU. Ở mode cdp, nút Đăng nhập lại đọc SESSION_BROWSER nên
+# mở CHROME với profile tạm trong khi đường quét dùng CỐC CỐC với profile thật:
+# đăng nhập xong cookie ghi vào chỗ khác, lần quét sau vẫn không thấy phiên.
+# Đó là lỗi 4 trong DE-XUAT-CAI-TIEN.md, đã sửa vặt từng chỗ rồi; gộp biến để
+# loại hẳn lớp lỗi này thay vì vá tiếp.
+#
+# Giá trị: "coccoc" | "chrome" | "edge". Trình duyệt nào MỞ KHÔNG phụ thuộc
+# mode; mode chỉ quyết định CÁCH KẾT NỐI (cổng debug có sẵn hay tự mở).
+BROWSER = os.environ.get("V72_BROWSER", "coccoc").lower().strip() or "coccoc"
+
+# Alias giữ tương thích: mọi chỗ cũ đọc CDP_BROWSER/SESSION_BROWSER vẫn chạy.
+# Cả hai giờ cùng trỏ về BROWSER — không còn đường lệch nhau.
+CDP_BROWSER = BROWSER
+SESSION_BROWSER = BROWSER
 
 # Profile thật của trình duyệt để DÙNG LẠI PHIÊN ĐÃ ĐĂNG NHẬP.
 #
@@ -83,11 +94,6 @@ USE_REAL_PROFILE = os.environ.get("V72_USE_REAL_PROFILE", "1") not in ("0", "fal
 #
 # Đổi bằng biến môi trường V72_BROWSER_MODE nếu muốn thử cả hai.
 BROWSER_MODE = os.environ.get("V72_BROWSER_MODE", "cdp")
-
-# Trình duyệt dùng cho mode "persistent": "chrome" | "coccoc" | "" (tự dò).
-# "chrome" được khuyên: Cốc Cốc thường đang chạy sẵn và khoá độc quyền file
-# Cookies, nên muốn dùng profile Cốc Cốc thì phải đóng nó trước mỗi phiên.
-SESSION_BROWSER = os.environ.get("V72_SESSION_BROWSER", "chrome")
 
 # Thư mục profile cho mode "persistent". Rỗng = mặc định
 #   %LOCALAPPDATA%\V72Crawler\session_<browser>

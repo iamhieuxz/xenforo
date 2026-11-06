@@ -237,6 +237,10 @@ class SessionLog:
             except Exception:
                 pass
             self._fh = None
+        # Nếu đây là logger active thì bỏ đánh dấu, tránh ghi vào file đã đóng.
+        global _active_logger
+        if _active_logger is self:
+            _active_logger = None
 
     # ---------- thông tin ----------
 
@@ -312,3 +316,58 @@ def summarize(path):
         "warns": warns,
         "top_errors": errs.most_common(10),
     }
+
+
+# ---------- bộ đệm cho lỗi bị nuốt TRƯỚC khi có SessionLog ----------
+# gui_fluent import trước khi MainWindow kịp tạo SessionLog, nên các khối
+# `except: pass` ở mức import/cấu trúc không có logger để ghi. Bộ đệm này
+# giữ lại; phiên đầu tiên mở file sẽ ghi tiếp phần còn dư.
+
+_pending_swallows = []
+_pending_lock = threading.Lock()
+_active_logger = None      # SessionLog đang sống, để ghi thẳng
+
+
+def note_swallow(where, exc):
+    """Ghi một lỗi bị nuốt. Có logger thì ghi thẳng, chưa có thì đệm.
+
+    Không ném, không bao giờ.
+
+    Lỗi thiết kế bản trước: hàm này CHỈ đệm — nên mọi lỗi bị nuốt SAU khi logger
+    đã tạo vẫn không vào file, chỉ nằm trong bộ đệm không ai đọc (đo được:
+    swallow gọi 2 lần, file chỉ có 1 dòng). Giờ nếu đã có logger active thì
+    ghi thẳng vào file; chưa có thì đệm cho drain_pending.
+    """
+    global _active_logger
+    entry = f"{where}: {type(exc).__name__}: {exc}"
+    try:
+        lg = _active_logger
+        if lg is not None:
+            lg.write(f"[!] lỗi bị nuốt: {entry}", None)
+            return
+        with _pending_lock:
+            _pending_swallows.append(entry)
+            if len(_pending_swallows) > 200:
+                del _pending_swallows[:100]
+    except Exception:
+        pass
+
+
+def set_active_logger(logger):
+    """Đánh dấu logger đang sống và đổ bộ đệm cũ vào nó."""
+    global _active_logger
+    _active_logger = logger
+    if logger is not None:
+        drain_pending(logger)
+
+
+def drain_pending(logger):
+    """Đưa các lỗi đã đệm vào logger (mức WARN). Xoá bộ đệm sau khi ghi."""
+    with _pending_lock:
+        items = list(_pending_swallows)
+        _pending_swallows.clear()
+    for it in items:
+        try:
+            logger.write(f"[!] lỗi bị nuốt lúc khởi tạo: {it}", None)
+        except Exception:
+            pass

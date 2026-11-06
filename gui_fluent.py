@@ -46,6 +46,28 @@ from downloader import count_files
 import xf_selectors as S
 
 
+# Bộ ghi lỗi nuốt an toàn: mỗi lần except: pass gọi hàm này, lỗi được đếm và
+# (nếu có session_log) ghi một dòng. Không ném lại — không bao giờ.
+#
+# VÌ SAO QUAN TRỌNG: 2/5 lỗi nghiêm trọng của đợt review trước trốn đúng trong
+# các khối except:pass im lặng (AttributeError lúc tải media, exception trong
+# callback). Nuốt lỗi khi cần giữ app chạy là hợp lý; nuốt KHÔNG dấu vết thì
+# không. Gọi hàm này thay cho `pass` để mỗi lần nuốt đều để lại dấu vết trong
+# log phiên — mở check_log.py là thấy.
+_swallowed = {"count": 0}
+
+
+def swallow(where, exc=None):
+    """Nuốt lỗi nhưng để lại dấu vết. Trả về None, không bao giờ ném."""
+    _swallowed["count"] += 1
+    try:
+        if exc is not None:
+            session_log.note_swallow(where, exc)
+    except Exception:
+        pass
+    return None
+
+
 # Bảng màu log cho Light và Dark theme
 LOG_COLORS_LIGHT = {
     "error": "#b42318",
@@ -157,8 +179,11 @@ class CrawlWorker(QThread):
             try:
                 if self.engine:
                     loop.call_soon_threadsafe(self.engine.emergency_cleanup)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                # Loop có thể đã đóng giữa lúc bấm Dừng và lúc chạy dòng này.
+                # Nuốt nhưng để lại dấu vết: dọn dẹp thất bại -> tab có thể
+                # còn mở, cần biết thay vì im lặng.
+                swallow("emergency_cleanup", e)
 
     def run(self):
         loop = asyncio.new_event_loop()
@@ -181,8 +206,11 @@ class CrawlWorker(QThread):
                     t.cancel()
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except Exception:
-                pass
+            except Exception as e:
+                # Dọn task còn treo lúc thoát. Thất bại thì loop vẫn đóng bên
+                # dưới, nhưng "Task was destroyed but it is pending" sẽ lộ ra
+                # stderr — giờ còn nằm trong log phiên.
+                swallow("worker_cleanup", e)
             loop.close()
             self.current_loop = None
             is_stopped = self.stop_event.is_set()
@@ -954,6 +982,12 @@ class MainWindow(MSFluentWindow):
                     log_dir=getattr(config, "LOG_DIR", None),
                     keep=getattr(config, "LOG_KEEP_SESSIONS", 30),
                     min_level=getattr(config, "LOG_MIN_LEVEL", "DEBUG"))
+                # Đăng ký logger active: lỗi bị nuốt từ giờ ghi thẳng vào
+                # file, còn lỗi đã đệm từ trước thì đổ vào.
+                try:
+                    session_log.set_active_logger(self.session_log)
+                except Exception:
+                    pass
             except Exception:
                 self.session_log = None
 
@@ -1048,8 +1082,11 @@ class MainWindow(MSFluentWindow):
             return False
         try:
             self.cache.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # Đổi thư mục lưu trữ: DB cũ có thể đang bị worker giữ. Nuốt để
+            # vẫn mở được DB mới, nhưng ghi lại — mất cache cũ nghĩa là lần
+            # sau tải lại media đã có.
+            swallow("reload_storage.close", e)
         self.cache = MediaCache(os.path.join(self.download_dir, "crawler_cache.db"))
         self.local_users = LocalUserIndex(self.cache.conn)
         self.local_users.refresh(self.download_dir)
@@ -1118,15 +1155,18 @@ class MainWindow(MSFluentWindow):
         try:
             fn(title=title, content=content, parent=self,
                position=InfoBarPosition.TOP_RIGHT, duration=ms or 4000)
-        except Exception:
-            pass
+        except Exception as e:
+            # Thông báo lỗi không được làm chết luồng GUI. Nhưng nếu InfoBar
+            # hỏng thì người dùng mất mọi phản hồi — phải thấy trong log.
+            swallow("infobar", e)
 
     def _on_login_opened_ui(self, browser: str, prof: str, wait: bool):
         """Handler cho việc mở cửa sổ đăng nhập. Chạy trên GUI thread."""
         try:
             self.settings_interface._on_login_opened(browser, prof, wait)
-        except Exception:
-            pass
+        except Exception as e:
+            # Lỗi ở đây nghĩa là người dùng không thấy hướng dẫn đăng nhập.
+            swallow("login_opened_ui", e)
 
     def append_log(self, message: str, tag: str = "info"):
         self.log_history.append((message, tag))
@@ -1137,8 +1177,9 @@ class MainWindow(MSFluentWindow):
         if self.session_log is not None:
             try:
                 self.session_log.write(message, tag)
-            except Exception:
-                pass
+            except Exception as e:
+                # Ghi file hỏng không được chặn vẽ log ra màn hình.
+                swallow("session_log.write", e)
         self.crawler_interface.append_log(message, tag)
     def _theme_file_path(self) -> str:
         candidates = [
@@ -1174,8 +1215,10 @@ class MainWindow(MSFluentWindow):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(theme_str)
-        except OSError:
-            pass
+        except OSError as e:
+            # Mất theme đã chọn thì lần sau mở lại sai theme — phiền nhưng
+            # không chết app. Ghi lại để biết vì sao theme không giữ được.
+            swallow("save_theme", e)
 
     # ---------------- Các hành động quét ----------------
     def start_author_crawl(self):
@@ -1376,19 +1419,21 @@ class MainWindow(MSFluentWindow):
                 try:
                     sig.disconnect()
                 except (RuntimeError, TypeError):
-                    pass
-        except Exception:
-            pass
+                    pass    # chưa connect thì disconnect ném RuntimeError — hợp lệ
+        except Exception as e:
+            swallow("release_worker.disconnect", e)
         try:
             if w.isRunning():
                 w.wait(3000)
-        except Exception:
-            pass
+        except Exception as e:
+            # QThread không chịu dừng sau 3s: đáng biết, vì worker đó còn giữ
+            # engine + cache.
+            swallow("release_worker.wait", e)
         # Không deleteLater nếu closeEvent đang chạy trên chính thread này.
         try:
             w.deleteLater()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow("release_worker.deleteLater", e)
         self.append_log("[*] Đã giải phóng tiến trình quét.", "system")
 
     def closeEvent(self, event):
@@ -1405,12 +1450,12 @@ class MainWindow(MSFluentWindow):
                 self.worker.wait(2000)
         try:
             self.cache.close()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow("close.cache", e)
         try:
             browser_launcher.shutdown()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow("close.browser_shutdown", e)
         # Đóng log SAU CÙNG để còn ghi được lỗi ở các bước dọn dẹp trên.
         # Summary giúp biết ngay phiên đó có bao nhiêu lỗi mà không phải grep.
         if getattr(self, "session_log", None) is not None:

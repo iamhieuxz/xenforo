@@ -237,6 +237,66 @@ class TestLoginWindowUsesCorrectMode(unittest.TestCase):
             self.assertIn("BROWSER_MODE", src, f"{who} phải rẽ nhánh theo mode")
 
 
+class TestBrowserConfigUnified(unittest.TestCase):
+    """P2.4: MỘT biến BROWSER quyết định trình duyệt cho cả hai mode.
+
+    LỖI GỐC: CDP_BROWSER="coccoc" và SESSION_BROWSER="chrome" lệch nhau, nên nút
+    Đăng nhập mở Chrome + profile tạm trong khi đường quét dùng Cốc Cốc + profile
+    thật. Cookie ghi vào chỗ khác -> lần quét sau không thấy phiên.
+
+    Bây giờ cả hai biến đều là alias trỏ về config.BROWSER.
+    """
+
+    def test_aliases_point_to_same_browser(self):
+        self.assertEqual(config.CDP_BROWSER, config.BROWSER)
+        self.assertEqual(config.SESSION_BROWSER, config.BROWSER,
+                         "SESSION_BROWSER phải trỏ về BROWSER, không còn giá trị riêng")
+
+    def test_browser_follows_env(self):
+        import importlib
+        old = os.environ.pop("V72_BROWSER", None)
+        try:
+            os.environ["V72_BROWSER"] = "edge"
+            importlib.reload(config)
+            self.assertEqual(config.BROWSER, "edge")
+            self.assertEqual(config.CDP_BROWSER, "edge")
+            self.assertEqual(config.SESSION_BROWSER, "edge")
+        finally:
+            if old is not None:
+                os.environ["V72_BROWSER"] = old
+            else:
+                os.environ.pop("V72_BROWSER", None)
+            importlib.reload(config)
+
+    def test_browser_value_normalised(self):
+        import importlib
+        old = os.environ.pop("V72_BROWSER", None)
+        try:
+            os.environ["V72_BROWSER"] = "  CHROME  "
+            importlib.reload(config)
+            self.assertEqual(config.BROWSER, "chrome",
+                             "phải strip + lower để so sánh tên trình duyệt đúng")
+        finally:
+            if old is not None:
+                os.environ["V72_BROWSER"] = old
+            else:
+                os.environ.pop("V72_BROWSER", None)
+            importlib.reload(config)
+
+    def test_no_independent_session_browser_default(self):
+        """SESSION_BROWSER không được đọc env riêng nữa — chỉ BROWSER đọc env.
+
+        Nếu còn đọc V72_SESSION_BROWSER thì một lần set lại đó sẽ tái tạo đúng
+        lớp lỗi này.
+        """
+        import inspect
+        src = inspect.getsource(config)
+        self.assertNotIn('V72_SESSION_BROWSER', src,
+                         "SESSION_BROWSER không được có env riêng nữa")
+        self.assertNotIn('V72_CDP_BROWSER', src,
+                         "CDP_BROWSER không được có env riêng nữa")
+
+
 class TestSessionLogWiring(unittest.TestCase):
     """Log phải ghi ra FILE, không chỉ trong RAM."""
 
@@ -457,6 +517,78 @@ class TestCleanDuplicatesSafety(unittest.TestCase):
             errors="replace", timeout=120)
         self.assertEqual(len(os.listdir(folder)), 2,
                          "nội dung khác nhau thì không được xoá")
+
+
+
+
+class TestSwallowLeavesTrace(unittest.TestCase):
+    """P2.3: except:pass phải để lại dấu vết — không nuốt không dấu vết.
+
+    LỊCH SỬ: 2/5 lỗi nghiêm trọng trước đây trốn trong các khối except:pass
+    im lặng. Giờ các chỗ nguy hiểm gọi swallow() — phải chứng minh được lỗi
+    đến được file log, kể cả khi xảy ra TRƯỚC khi MainWindow tạo logger.
+    """
+
+    def test_note_swallow_before_logger_buffers(self):
+        import session_log as SL
+        # reset trạng thái module để test độc lập
+        old_active = SL._active_logger
+        SL._active_logger = None
+        try:
+            SL._pending_swallows.clear()
+            try:
+                raise OSError("x")
+            except OSError as e:
+                SL.note_swallow("ut", e)
+            self.assertEqual(len(SL._pending_swallows), 1)
+            self.assertIn("ut", SL._pending_swallows[0])
+        finally:
+            SL._active_logger = old_active
+            SL._pending_swallows.clear()
+
+    def test_note_swallow_after_logger_writes_directly(self):
+        import session_log as SL
+        tmp = tempfile.mkdtemp(prefix="swt_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        lg = SL.SessionLog(log_dir=tmp, keep=2)
+        self.addCleanup(lg.close)
+        try:
+            SL.set_active_logger(lg)
+        except Exception:
+            pass
+        try:
+            self.addCleanup(setattr, SL, "_active_logger", None)
+        except Exception:
+            pass
+        try:
+            raise ValueError("y")
+        except ValueError as e:
+            SL.note_swallow("rt", e)
+        body = open(lg.path, encoding="utf-8").read()
+        self.assertIn("rt", body,
+                      "có logger active thì lỗi phải ghi THẲNG vào file, không đệm")
+
+    def test_close_clears_active_logger(self):
+        """Logger đã đóng không được giữ làm active — ghi vào file đóng là mất."""
+        import session_log as SL
+        tmp = tempfile.mkdtemp(prefix="swc_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        lg = SL.SessionLog(log_dir=tmp, keep=2)
+        SL.set_active_logger(lg)
+        lg.close()
+        self.assertIsNone(SL._active_logger)
+
+    def test_gui_fluent_swallow_is_used(self):
+        """Các chỗ except:pass nguy hiểm đã đổi sang swallow()."""
+        import inspect
+        import gui_fluent
+        src = inspect.getsource(gui_fluent)
+        n = src.count("swallow(")
+        self.assertGreaterEqual(n, 10,
+                                f"phải có ít nhất 10 chỗ gọi swallow(), đang {n}")
+        # Và hàm tồn tại
+        self.assertTrue(callable(gui_fluent.swallow))
+
 
 
 if __name__ == "__main__":
