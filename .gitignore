@@ -7,3 +7,6 @@ tmpixxgnbw4
 _o.txt
 pip-unpack-*/
 *.whl
+.tmpx/
+logs_*/
+session-*.log
