@@ -20,7 +20,7 @@ CDP_URL = f"http://{CDP_HOST}:{CDP_PORT}"
 
 # App tự mở trình duyệt ở cổng debug khi khởi động. Tắt nếu bạn tự mở tay.
 AUTO_LAUNCH_BROWSER = True
-BROWSER_PROFILE = "v72_crawl"   # profile riêng, không đụng phiên đang dùng
+BROWSER_PROFILE = "v72_crawl"   # profile riêng của app (mặc định)
 
 # Trình duyệt dùng cho mode CDP: "chrome" | "coccoc" | "edge".
 #
@@ -28,7 +28,25 @@ BROWSER_PROFILE = "v72_crawl"   # profile riêng, không đụng phiên đang d�
 # ĐẦU TIÊN trong danh sách — mà danh sách xếp Cốc Cốc trước Chrome. Kết quả là
 # bấm Quét thì app mở một cửa sổ Cốc Cốc trắng trơn bên cạnh trình duyệt bạn
 # đang dùng, không cookie, không extension. Đó chính là "một đống bùi nhùi".
-CDP_BROWSER = os.environ.get("V72_CDP_BROWSER", "chrome")
+CDP_BROWSER = os.environ.get("V72_CDP_BROWSER", "coccoc")
+
+# Profile thật của trình duyệt để DÙNG LẠI PHIÊN ĐÃ ĐĂNG NHẬP.
+#
+# Đặt USE_REAL_PROFILE = True thì app mở profile gốc của Cốc Cốc/Chrome thay vì
+# profile riêng của app. Nhờ vậy có ngay cookie, extension và phiên đăng nhập —
+# không phải đăng nhập lại.
+#
+# ĐO ĐƯỢC (máy người dùng, 2026-11): profile Cốc Cốc có 783 cookie, trong đó
+# xf_user cho rphang.show / rphang.beer / rphang.fish / rphang.now / rphang.shop
+# / xamvn.* / thiendia5.com. Profile riêng của app chỉ có 5 cookie.
+#
+# ĐIỀU KIỆN: phải ĐÓNG HẾT trình duyệt trước. Chromium giữ khoá độc quyền trên
+# file Cookies của profile đang mở (đo được: chỉ file đó bị khoá), nên không mở
+# được cổng debug trên profile đang chạy.
+#
+# RỦI RO: app ghi vào profile thật (cookie, history, extension state). Chấp nhận
+# được khi bạn muốn dùng phiên có sẵn; đổi về False nếu muốn profile tách riêng.
+USE_REAL_PROFILE = os.environ.get("V72_USE_REAL_PROFILE", "1") not in ("0", "false", "False")
 
 # ---------- Cách điều khiển trình duyệt ----------
 # "cdp" — nối vào cổng debug của Chrome ĐANG CHẠY (mặc định).

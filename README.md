@@ -89,11 +89,25 @@ python gui_fluent.py
 
 Đặt `BROWSER_MODE` trong `config.py`.
 
-### `cdp` (mặc định) — bám vào Chrome đang chạy
+### `cdp` (mặc định) — dùng phiên Cốc Cốc có sẵn
 
-Bạn mở Chrome **một lần** qua script có sẵn, rồi app bám vào đúng cửa sổ đó.
-App KHÔNG mở thêm cửa sổ, KHÔNG tạo profile mới, dùng đúng cookie và extension
-của bạn.
+**Mặc định dùng profile THẬT của Cốc Cốc**, nên có ngay cookie và phiên đăng
+nhập — không phải đăng nhập lại. Đo trên máy người dùng:
+
+```
+Profile Cốc Cốc: 783 cookie
+  xf_user có sẵn cho: rphang.show / .beer / .fish / .now / .shop
+                      xamvn.asia / .work / .lifestyle, thiendia5.com
+Profile riêng của app: chỉ 5 cookie
+```
+
+Cách chạy gọn nhất:
+
+```
+start_app.bat      <- mở Cốc Cốc ở cổng 9222, rồi mở app
+```
+
+Hoặc làm từng bước:
 
 ```
 open_debug_chrome.bat        (hoặc: python open_debug_chrome.py)
@@ -112,9 +126,13 @@ python open_debug_chrome.py --check
 
 ```python
 BROWSER_MODE = "cdp"
-CDP_BROWSER = "chrome"    # "chrome" | "coccoc" | "edge"
+CDP_BROWSER = "coccoc"        # "chrome" | "coccoc" | "edge"
+USE_REAL_PROFILE = True       # dùng profile thật -> có sẵn session
 CDP_PORT = 9222
 ```
+
+Đặt `USE_REAL_PROFILE = False` nếu muốn profile tách riêng của app — an toàn hơn
+nhưng phải đăng nhập lại từ đầu.
 
 ### `persistent` — không cần cổng
 

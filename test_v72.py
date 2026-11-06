@@ -854,10 +854,31 @@ class TestBrowserLauncher(unittest.TestCase):
         self.assertTrue(exe and os.path.isfile(exe),
                         "phải tìm được Cốc Cốc/Chrome, không thì app báo lỗi ngay")
 
-    def test_profile_dir_is_separate(self):
-        """Profile phải tách khỏi profile đang dùng, nếu không cờ debug bị bỏ qua."""
-        self.assertNotIn("User Data", B.profile_dir())
-        self.assertTrue(B.profile_dir().endswith(config.BROWSER_PROFILE))
+    def test_profile_dir_follows_use_real_profile(self):
+        """profile_dir() phải theo config.USE_REAL_PROFILE.
+
+        Hai chế độ hợp lệ:
+          USE_REAL_PROFILE=True  -> profile gốc của trình duyệt (có session sẵn)
+          USE_REAL_PROFILE=False -> profile riêng của app (tách biệt, nhưng trắng)
+
+        Bản cũ hard-code "phải tách khỏi User Data". Điều đó đúng khi app luôn
+        dùng profile riêng, nhưng sai khi người dùng muốn tận dụng phiên đăng
+        nhập có sẵn của Cốc Cốc — mục đích chính của chế độ CDP.
+        """
+        old = config.USE_REAL_PROFILE
+        try:
+            config.USE_REAL_PROFILE = True
+            real = B.profile_dir()
+            # Có thể không có trình duyệt nào -> rơi về profile riêng, vẫn hợp lệ
+            self.assertTrue(real and os.path.isabs(real))
+
+            config.USE_REAL_PROFILE = False
+            own = B.profile_dir()
+            self.assertTrue(own.endswith(config.BROWSER_PROFILE),
+                            f"profile riêng phải kết thúc bằng BROWSER_PROFILE: {own}")
+            self.assertIn("V72Crawler", own)
+        finally:
+            config.USE_REAL_PROFILE = old
 
     def test_launch_flags_include_user_data_dir(self):
         args = B.build_args(B.find_browser())

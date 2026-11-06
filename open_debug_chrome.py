@@ -25,11 +25,18 @@ import config
 import browser_launcher as B
 
 
-def running_chrome_count():
+# Tên tiến trình theo trình duyệt đang chọn
+_PROC = {"coccoc": "browser.exe", "chrome": "chrome.exe", "edge": "msedge.exe"}
+
+
+def running_count():
+    """Số tiến trình của trình duyệt trong config.CDP_BROWSER."""
+    want = (getattr(config, "CDP_BROWSER", "coccoc") or "coccoc").lower()
+    proc = _PROC.get(want, f"{want}.exe")
     try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV"],
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {proc}", "/FO", "CSV"],
                              capture_output=True, text=True, timeout=10).stdout
-        return len([l for l in out.splitlines() if "chrome" in l.lower()])
+        return len([l for l in out.splitlines() if proc.lower() in l.lower()])
     except Exception:
         return -1
 
@@ -42,8 +49,9 @@ def report():
     state = B.probe_port()
     print(f"  cổng {config.CDP_PORT}      : {state['state']} — {state['detail']}")
 
-    exe = B.find_browser_for("chrome")
-    print(f"  chrome.exe          : {exe or 'KHÔNG TÌM THẤY'}")
+    want = (getattr(config, "CDP_BROWSER", "coccoc") or "coccoc").lower()
+    exe = B.find_browser_for(want)
+    print(f"  trình duyệt ({want:6}): {exe or 'KHÔNG TÌM THẤY'}")
 
     prof = B.profile_dir()
     print(f"  profile sẽ dùng     : {prof}")
@@ -57,7 +65,7 @@ def report():
     else:
         print(f"  cookie đăng nhập    : chưa có file cookie")
 
-    print(f"  chrome.exe đang chạy: {running_chrome_count()} process")
+    print(f"  tiến trình đang chạy: {running_count()}")
     print()
 
 
@@ -74,9 +82,9 @@ def main():
         print("Cổng đã sẵn sàng, không cần mở thêm. Bấm Quét trong app.")
         return 0
 
-    n = running_chrome_count()
+    n = running_count()
     if n > 0:
-        print(f"[!] Đang có {n} tiến trình chrome.exe chạy.")
+        print(f"[!] Đang có {n} tiến trình trình duyệt chạy.")
         print("    Chrome chỉ đọc cờ --remote-debugging-port lúc khởi động, nên")
         print("    cửa sổ đã mở sẽ KHÔNG có cổng debug.")
         print()

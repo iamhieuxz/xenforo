@@ -210,9 +210,13 @@ class TestCdpBrowserSelection(unittest.TestCase):
     """
 
     def test_cdp_browser_config_exists(self):
+        """CDP_BROWSER phải là một trong các trình duyệt hỗ trợ.
+
+        Mặc định hiện là "coccoc" vì người dùng muốn dùng phiên Cốc Cốc có sẵn
+        (783 cookie, có xf_user cho rphang.show). Đổi qua env V72_CDP_BROWSER.
+        """
         self.assertTrue(hasattr(config, "CDP_BROWSER"))
-        self.assertEqual(config.CDP_BROWSER, "chrome",
-                         "mặc định phải là chrome, không phải coccoc")
+        self.assertIn(config.CDP_BROWSER, ("chrome", "coccoc", "edge"))
 
     def _capture_launch(self, **kwargs):
         """Chạy launch() với Popen giả, trả đường dẫn exe sẽ được gọi."""
@@ -250,16 +254,30 @@ class TestCdpBrowserSelection(unittest.TestCase):
         return captured.get("exe", "")
 
     def test_launch_picks_configured_browser_not_first_candidate(self):
-        """launch() phải mở Chrome, KHÔNG phải Cốc Cốc (ứng viên đầu danh sách)."""
+        """launch() phải mở ĐÚNG trình duyệt trong config.CDP_BROWSER.
+
+        Lỗi gốc: launch() gọi find_browser() trần, hàm này trả ứng viên ĐẦU TIÊN
+        trong danh sách (Cốc Cốc đứng trước Chrome) nên mở nhầm trình duyệt.
+        Test này kiểm launch() theo config, không hard-code tên trình duyệt.
+        """
         import browser_launcher as B
-        if not B.find_browser_for("chrome"):
-            self.skipTest("máy không có Chrome")
+        want = (config.CDP_BROWSER or "chrome").lower()
+        if not B.find_browser_for(want):
+            self.skipTest(f"máy không có {want}")
+
         exe = self._capture_launch()
         self.assertTrue(exe, "launch() không gọi Popen")
-        self.assertIn("chrome", exe.lower(),
-                      f"launch() mở nhầm trình duyệt: {exe}")
-        self.assertNotIn("coccoc", exe.lower(),
-                         "không được mở Cốc Cốc khi CDP_BROWSER='chrome'")
+
+        # Phải là đúng loại trong config, KHÔNG phải "ứng viên đầu danh sách".
+        expect = B.find_browser_for(want)
+        self.assertEqual(os.path.normcase(exe), os.path.normcase(expect),
+                         f"launch() mở {exe}, phải mở {expect}")
+
+        # Và phải KHÁC ứng viên đầu danh sách nếu chúng khác nhau
+        first = B.find_browser()
+        if first and os.path.normcase(first) != os.path.normcase(expect):
+            self.assertNotEqual(os.path.normcase(exe), os.path.normcase(first),
+                                "launch() quay lại lỗi 'lấy ứng viên đầu danh sách'")
 
     def test_launch_respects_browser_argument(self):
         """Truyền browser= cụ thể phải thắng config."""

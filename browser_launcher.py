@@ -89,8 +89,42 @@ def find_browser(explicit=None):
 
 
 def profile_dir():
+    """Profile để mở trình duyệt ở cổng debug.
+
+    Có hai chế độ, chọn bằng config.USE_REAL_PROFILE:
+
+    True  — profile GỐC của trình duyệt (%LOCALAPPDATA%\\CocCoc\\...\\User Data).
+            Có sẵn cookie, extension, phiên đăng nhập: không phải đăng nhập lại.
+            Đo được trên máy người dùng: profile Cốc Cốc có 783 cookie, trong đó
+            xf_user cho rphang.show và nhiều diễn đàn khác.
+            ĐIỀU KIỆN: phải đóng hết trình duyệt (Chromium giữ khoá độc quyền
+            trên file Cookies của profile đang mở).
+
+    False — profile riêng của app (V72Crawler\\<BROWSER_PROFILE>). Tách biệt
+            hoàn toàn, không đụng dữ liệu người dùng, nhưng là profile TRẮNG.
+    """
+    if getattr(config, "USE_REAL_PROFILE", False):
+        browser = (getattr(config, "CDP_BROWSER", "coccoc") or "coccoc").lower()
+        real = _real_profile_dir(browser)
+        if real and os.path.isdir(real):
+            return real
+        # Không thấy profile gốc -> rơi về profile riêng thay vì trả đường dẫn
+        # không tồn tại (Chromium sẽ thoát với "Failed to create ProcessSingleton").
+
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "V72Crawler", config.BROWSER_PROFILE)
+
+
+def _real_profile_dir(browser):
+    """Đường dẫn profile gốc của một trình duyệt, hoặc None."""
+    la = os.environ.get("LOCALAPPDATA") or ""
+    table = {
+        "coccoc": os.path.join(la, r"CocCoc\Browser\User Data"),
+        "chrome": os.path.join(la, r"Google\Chrome\User Data"),
+        "edge": os.path.join(la, r"Microsoft\Edge\User Data"),
+    }
+    p = table.get((browser or "").lower())
+    return p if p and os.path.isdir(p) else None
 
 
 def _cdp_base():
