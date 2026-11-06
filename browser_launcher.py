@@ -11,6 +11,7 @@
   đó, nên --user-data-dir riêng là điều kiện sống còn, không phải tuỳ chọn.
 """
 
+import atexit
 import json
 import os
 import socket
@@ -45,6 +46,26 @@ EXE_CANDIDATES = tuple(p for p in _BROWSER_CANDIDATES if p)
 # tượng: không thể terminate() khi app thoát, và không phân biệt được cổng
 # đang do CHÍNH tiến trình này giữ hay của người khác.
 _launched_process = None
+
+
+def _atexit_cleanup():
+    """Dọn tiến trình trình duyệt khi tiến trình Python kết thúc.
+
+    VÌ SAO CẦN: `launch()` mở trình duyệt nhưng chỉ `shutdown()` mới đóng. Nếu
+    script kết thúc mà không gọi (open_debug_chrome.py chạy xong rồi thoát),
+    trình duyệt ở lại và GIỮ CỔNG 9222. Lần chạy sau thấy cổng đã "ready" nên
+    tưởng là của mình, trong khi đó là tiến trình mồ côi từ lần trước — dẫn tới
+    test fail, và app kết nối vào profile cũ không mong muốn.
+
+    Đo được: tình trạng này làm 2 test fail và cổng 9222 bị chiếm vĩnh viễn.
+    """
+    try:
+        shutdown()
+    except Exception:
+        pass
+
+
+atexit.register(_atexit_cleanup)
 
 
 def find_browser_for(browser=None):

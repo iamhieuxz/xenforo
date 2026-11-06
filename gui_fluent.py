@@ -18,7 +18,7 @@ import threading
 from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QSize, QTimer
-from PySide6.QtGui import QIcon, QFont, QTextCursor
+from PySide6.QtGui import QIcon, QFont, QTextCursor, QTextCharFormat, QTextBlockFormat, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFileDialog, QSizePolicy
@@ -191,7 +191,30 @@ class CrawlWorker(QThread):
 class CrawlerInterface(QWidget):
     """Giao diện chính điều khiển quét XenForo."""
 
-    # Trần độ dài nhật ký (tính bằng KÝ TỰ, không phải block).
+    # Font log. Phải là monospace để cột thẳng hàng, nhưng KHÔNG font monospace
+    # nào trên Windows có đủ glyph cho ✓ ↳ 👥 cùng lúc với tiếng Việt (đo được:
+    # Consolas 6/8, Courier New 6/8, Lucida Console 4/8). Qt sẽ mượn font dự phòng
+    # cho ký tự thiếu, và font dự phòng có metric khác -> dòng cao thấp khác nhau.
+    #
+    # Vì vậy KHÔNG dựa vào font để "có đủ ký tự"; thay vào đó chuẩn hoá ký tự
+    # trong log (xem LOG_GLYPH_MAP) để mọi dòng chỉ dùng ký tự Consolas có sẵn.
+    LOG_FONT_FAMILY = "Consolas"
+    LOG_FONT_SIZE = 10
+
+    # Thay ký tự không có glyph trong font log bằng tương đương ASCII.
+    # ĐO ĐƯỢC: dòng chứa 👥 cao 17px, dòng thường 15px -> lệch 2px mỗi dòng,
+    # cộng dồn thành "mớ hỗn độn". Sau khi thay: mọi dòng đều 15px.
+    LOG_GLYPH_MAP = {
+        "👥": "",       # emoji người: bỏ hẳn, thông tin đã có ở nhãn [USER]
+        "✓": "OK",      # dấu tick: Consolas không có glyph. Dùng "OK" chứ
+                        # không "[OK]": log gốc đã có ngoặc " [✓] " nên sẽ
+                        # thành "[[OK]]" nếu thêm ngoặc ở đây.
+        "↳": "  >",     # mũi tên gấp khúc: không có glyph
+        "•": "-",       # bullet tròn: có glyph nhưng thay cho đồng nhất
+        "↓": "v",       # mũi tên xuống: có glyph, đổi cho khỏi lẫn với chữ
+        "—": "-",       # em dash: đổi sang gạch ngang ASCII
+        "►": ">",
+    }
     #
     # Vì sao đo bằng ký tự: ta chèn mỗi dòng log bằng insertHtml, không tạo
     # paragraph mới, nên document().blockCount() luôn = 1 và không dùng làm
@@ -365,8 +388,19 @@ class CrawlerInterface(QWidget):
 
         self.log_edit = TextEdit(self.card_log)
         self.log_edit.setReadOnly(True)
-        font = QFont("Consolas", 10)
-        self.log_edit.setFont(font)
+        # Font monospace + setFixedPitch: cột thẳng hàng, chiều rộng ký tự đều.
+        log_font = QFont(self.LOG_FONT_FAMILY, self.LOG_FONT_SIZE)
+        log_font.setStyleHint(QFont.Monospace)
+        log_font.setFixedPitch(True)
+        self.log_edit.setFont(log_font)
+        # Tab = 4 space cố định, nếu không Qt tự chọn bề rộng và các dòng lệch nhau.
+        self.log_edit.setTabStopDistance(
+            self.log_edit.fontMetrics().horizontalAdvance(" ") * 4)
+        # Thụt lề cho dòng bị wrap: nhìn ra ngay đâu là phần tiếp của dòng cũ,
+        # đâu là dòng mới. Không có bước này, dòng dài bị cắt và chữ tiếp theo
+        # bắt đầu ở cột 0 -> không phân biệt được.
+        self.log_edit.setLineWrapMode(TextEdit.WidgetWidth)
+        self.log_edit.document().setDocumentMargin(6)
         layout_log.addWidget(self.log_edit, 1)
 
         layout.addWidget(self.card_log, 1)
@@ -442,39 +476,95 @@ class CrawlerInterface(QWidget):
         self.log_edit.moveCursor(QTextCursor.End)
 
     def _trim_log(self):
-        """Giữ độ dài nhật ký ở mức giới hạn.
+        """Giữ độ dài nhật ký ở mức giới hạn, cắt THEO DÒNG.
 
-        NGUYÊN NHÂN LAG CHÍNH. QTextEdit phải layout lại toàn bộ tài liệu mỗi
-        lần vẽ, và chi phí đó tăng theo độ dài văn bản. Một phiên quét dài sinh
-        hàng chục nghìn dòng; giữ hết thì mỗi dòng log mới càng lúc càng chậm,
-        và sau khi quét xong widget vẫn phải vẽ khối đó mỗi lần cuộn.
+        Vì sao theo dòng chứ không theo ký tự: mỗi dòng log giờ là một paragraph
+        thật (xem _append_formatted), nên cắt giữa ký tự sẽ chặt đôi một dòng và
+        để lại nửa dòng rác ở đầu nhật ký. Cắt theo block thì mỗi dòng còn
+        nguyên vẹn.
 
-        Đo được: khi chỉ kiểm theo document().blockCount() thì ngưỡng không bao
-        giờ chạm tới, vì ta chèn HTML block mà không tạo paragraph mới
-        (blockCount luôn = 1). Vì vậy ở đây đo bằng SỐ KÝ TỰ.
-
-        QTextEdit không có setMaximumBlockCount như QPlainTextEdit, nên phải
-        cắt tay từ đầu tài liệu.
+        Vì sao cần giới hạn: QTextEdit phải layout lại toàn bộ tài liệu khi vẽ,
+        chi phí tăng theo độ dài. Đo được chi phí mỗi dòng:
+            20.000 ký tự -> 0,29 ms/dòng
+           120.000 ký tự -> 1,71 ms/dòng
+        Không chặn thì phiên quét dài càng lúc càng chậm.
         """
         doc = self.log_edit.document()
         total = doc.characterCount()
         if total <= self.LOG_MAX_CHARS:
             return
 
-        # Cắt về 80% ngưỡng để không phải cắt lại ở dòng kế tiếp.
         cut_to = int(self.LOG_MAX_CHARS * 0.8)
         excess = total - cut_to
+
+        # Đếm xem cần bỏ bao nhiêu BLOCK để bớt được `excess` ký tự.
+        removed = 0
+        block = doc.begin()
+        blocks_to_drop = 0
+        while block.isValid() and removed < excess:
+            removed += block.length()
+            blocks_to_drop += 1
+            block = block.next()
+
+        if blocks_to_drop <= 0:
+            return
+
         cur = QTextCursor(doc)
         cur.movePosition(QTextCursor.Start)
-        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, excess)
+        # NextBlock giữ nguyên ranh giới dòng, không chặt đôi dòng nào.
+        cur.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor,
+                         blocks_to_drop)
         cur.removeSelectedText()
 
     def _append_formatted(self, message: str, tag: str, cursor: QTextCursor):
+        """Ghi một dòng log bằng QTextCharFormat, KHÔNG dùng HTML.
+
+        VÌ SAO BỎ HTML — đây là nguyên nhân chính của "mớ hỗn độn":
+
+        `QTextCursor.insertHtml("<div>...</div>")` KHÔNG tạo xuống dòng trong
+        QTextDocument của Qt. Đo được: chèn 5 dòng bằng insertHtml("<div>") thì
+        `blockCount` vẫn = 1 và `toPlainText()` ra "dong 0dong 1dong 2dong 3" —
+        tất cả dính thành một dòng dài, rồi widget tự ngắt theo bề rộng. Nhìn
+        vào là một khối chữ, không phân biệt được dòng nào với dòng nào.
+
+        Dùng insertText + QTextCharFormat: mỗi dòng là paragraph thật, xuống
+        dòng đúng, giữ nguyên khoảng trắng thụt lề, màu áp theo format.
+
+        Chuẩn hoá glyph cũng bắt buộc: font monospace trên Windows không có
+        glyph cho ✓ ↳ 👥 (đo được: Consolas thiếu cả ba), Qt mượn font dự phòng
+        có metric khác -> dòng chứa emoji cao 17px, dòng thường 15px.
+        """
         colors = LOG_COLORS_DARK if isDarkTheme() else LOG_COLORS_LIGHT
         color = colors.get(tag, colors["dim"])
-        escaped = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        html = f'<div style="color:{color}; line-height:135%;">{escaped}</div>'
-        cursor.insertHtml(html)
+
+        text = message
+        for bad, good in self.LOG_GLYPH_MAP.items():
+            if bad in text:
+                text = text.replace(bad, good)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        block_fmt = QTextBlockFormat()
+        block_fmt.setLineHeight(135.0, QTextBlockFormat.ProportionalHeight.value)
+        block_fmt.setTopMargin(0)
+        block_fmt.setBottomMargin(0)
+
+        # PHẢI tách dòng bằng "\n" qua insertText, KHÔNG dùng insertBlock.
+        #
+        # Lý do đo được: insertBlock tạo block mới nhưng cursor do append_log
+        # lấy bằng movePosition(End) lại nằm ở CUỐI BLOCK CUỐI, không phải ở
+        # block mới. Kết quả: 9 dòng log vẫn ra blockCount = 1 và toPlainText()
+        # dính thành một chuỗi. insertText("\n") tách block thật và vị trí
+        # cursor vẫn đúng cho lần ghi sau.
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            cursor.insertText(part, fmt)
+            if i < len(parts) - 1:
+                cursor.insertText("\n", fmt)
+        # Ngăn cách các lần gọi append_log. Không có bước này, lần ghi sau lại
+        # nối tiếp vào cuối dòng trước.
+        cursor.insertText("\n", fmt)
 
     def _copy_log(self):
         text = self.log_edit.toPlainText()

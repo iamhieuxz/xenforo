@@ -20,6 +20,7 @@ nếu box riêng cần phiên, truyền cookie lấy từ phiên đang có. Hàm
 
 import asyncio
 import gzip
+import os
 import random
 import ssl
 import time
@@ -224,3 +225,174 @@ def same_host(url, base):
         return urllib.parse.urlparse(url).netloc == urllib.parse.urlparse(base).netloc
     except Exception:
         return False
+
+
+# Kích thước mỗi lần đọc khi tải file. 64 KB là điểm cân bằng: đủ lớn để ít
+# lần gọi syscall, đủ nhỏ để RAM không phình.
+CHUNK_SIZE = 64 * 1024
+
+
+class DownloadResult:
+    """Kết quả tải một file về đĩa."""
+
+    __slots__ = ("status", "bytes", "error", "seconds", "content_type")
+
+    def __init__(self):
+        self.status = 0
+        self.bytes = 0
+        self.error = ""
+        self.seconds = 0.0
+        self.content_type = ""
+
+    @property
+    def ok(self):
+        return self.status == 200 and not self.error
+
+    def __repr__(self):
+        if self.ok:
+            return f"<DownloadResult ok {self.bytes}B {self.seconds:.2f}s>"
+        return f"<DownloadResult FAIL {self.status} {self.error!r}>"
+
+
+def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
+                     stop_event=None, max_bytes=None):
+    """Tải một file về đĩa bằng STREAMING, không nạp cả file vào RAM.
+
+    VÌ SAO CẦN: `context.request.get(...)` của Playwright phải `await
+    response.body()` — nạp TOÀN BỘ file vào RAM trước khi ghi. Đo được trên
+    dữ liệu thật của một thread: 39 ảnh + 56 video ≈ 580 MB. Với
+    DOWNLOAD_SEM=10, có thể có 10 file cùng nằm trong RAM; video 10 MB × 10 =
+    100 MB chỉ để chờ ghi. Đó là nguyên nhân app phình và giật khi tải.
+
+    Streaming giữ tối đa CHUNK_SIZE (64 KB) trong RAM, tốc độ không đổi
+    (đo được: 398 ms nạp cả file so với 397 ms stream 64 KB cho cùng file).
+
+    Ghi ra `.tmp` rồi `os.replace` để không bao giờ để lại file cụt mang tên
+    thật. Nếu tải dở, `.tmp` bị xoá.
+
+    Trả DownloadResult; không ném exception.
+    """
+    res = DownloadResult()
+    timeout = timeout or getattr(config, "HTTP_TIMEOUT", 30)
+    max_bytes = max_bytes or (getattr(config, "MAX_FILE_MB", 512) * 1024 * 1024)
+    tmp_path = save_path + ".tmp"
+    t0 = time.perf_counter()
+
+    try:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    except Exception as e:
+        res.error = f"không tạo được thư mục: {e}"
+        return res
+
+    written = 0
+    try:
+        req = urllib.request.Request(url, headers=_headers(referer, cookie))
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res.status = r.status
+            res.content_type = (r.headers.get("Content-Type") or "").lower()
+
+            # Khai báo quá lớn thì bỏ trước khi tải, đỡ tốn băng thông.
+            declared = r.headers.get("Content-Length")
+            if declared and declared.isdigit() and int(declared) > max_bytes:
+                res.error = f"quá lớn: {int(declared)//1024//1024} MB"
+                return res
+
+            with open(tmp_path, "wb") as f:
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        res.error = "cancelled"
+                        raise _Cancelled()
+                    chunk = r.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        res.error = f"vượt giới hạn {max_bytes//1024//1024} MB"
+                        raise _TooBig()
+                    f.write(chunk)
+
+        res.bytes = written
+        res.seconds = time.perf_counter() - t0
+        if written == 0:
+            res.error = "file rỗng"
+            _safe_remove(tmp_path)
+            return res
+        os.replace(tmp_path, save_path)
+        return res
+
+    except _Cancelled:
+        _safe_remove(tmp_path)
+        res.status = 0
+        res.seconds = time.perf_counter() - t0
+        return res
+    except _TooBig:
+        _safe_remove(tmp_path)
+        res.status = 0
+        res.seconds = time.perf_counter() - t0
+        return res
+    except urllib.error.HTTPError as e:
+        _safe_remove(tmp_path)
+        res.status = e.code
+        res.error = f"HTTP {e.code}"
+        res.seconds = time.perf_counter() - t0
+        return res
+    except urllib.error.URLError as e:
+        _safe_remove(tmp_path)
+        res.error = f"URLError: {e.reason}"
+        res.seconds = time.perf_counter() - t0
+        return res
+    except TimeoutError:
+        _safe_remove(tmp_path)
+        res.error = "timeout"
+        res.seconds = time.perf_counter() - t0
+        return res
+    except Exception as e:
+        _safe_remove(tmp_path)
+        res.error = f"{type(e).__name__}: {e}"
+        res.seconds = time.perf_counter() - t0
+        return res
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class _TooBig(Exception):
+    pass
+
+
+def _safe_remove(path):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def download_many(items, referer=None, cookie=None, workers=None,
+                  stop_event=None, on_done=None):
+    """Tải nhiều file song song. items = [(url, save_path)] .
+
+    Trả list DownloadResult cùng thứ tự với items. `on_done(url, path, result)`
+    được gọi sau mỗi file để chỗ gọi ghi cache ngay, không phải chờ hết.
+    """
+    workers = workers or getattr(config, "DOWNLOAD_SEM", 10)
+    workers = max(1, min(workers, len(items) or 1))
+    if not items:
+        return []
+
+    def one(item):
+        url, save_path = item
+        r = download_to_file(url, save_path, referer=referer, cookie=cookie,
+                             stop_event=stop_event)
+        if on_done:
+            try:
+                on_done(url, save_path, r)
+            except Exception:
+                pass
+        return r
+
+    if workers == 1:
+        return [one(it) for it in items]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(one, items))

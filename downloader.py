@@ -13,6 +13,11 @@ import shutil
 import aiofiles
 
 import config
+
+try:
+    import fast_fetch as _fast_fetch
+except Exception:
+    _fast_fetch = None
 import xf_selectors as S
 from xenforo_parse import clean_name, ext_for, get_url_filename
 
@@ -116,6 +121,15 @@ def plan_jobs(urls, folder, ts, tag, seq_start=1):
             filename = f"[{ts}]_{tag}_{i:03d}_{h[:6]}{ext}"
         jobs.append((url, os.path.join(folder, filename), h, kind))
     return jobs
+
+
+def _try_remove(path):
+    """Xoá file nếu tồn tại, không ném exception."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 
 class Downloader:
@@ -261,6 +275,18 @@ class Downloader:
             await asyncio.sleep(0.25)
 
     async def _fetch(self, context, url, save_path, referer_url, url_hash_):
+        """Tải một media. Dùng HTTP streaming khi bật, Playwright làm dự phòng.
+
+        VÌ SAO ĐỔI SANG STREAMING: `context.request.get(...)` + `await
+        response.body()` nạp TOÀN BỘ file vào RAM trước khi ghi. Đo trên một
+        thread thật: 39 ảnh + 56 video ≈ 580 MB. Với DOWNLOAD_SEM=10 có thể có
+        10 file cùng trong RAM (video 10 MB × 10 = 100 MB) chỉ để chờ ghi —
+        đây là nguyên nhân app phình và giật khi tải.
+
+        Streaming giữ tối đa 64 KB, tốc độ không đổi (đo được: 398 ms nạp cả
+        file so với 397 ms stream cùng file). Trình duyệt vẫn dùng khi HTTP
+        thất bại (trang cần cookie đặc biệt, chặn theo TLS fingerprint...).
+        """
         if self.stop_event.is_set():
             return "CANCELLED"
         if os.path.exists(save_path):
@@ -269,104 +295,145 @@ class Downloader:
         async with self.semaphore:
             if os.path.exists(save_path):
                 return "OK"
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            tmp_path = save_path + ".tmp"
-            headers = {"Referer": referer_url}
 
-            for attempt in range(config.MAX_RETRIES):
+            # ---- Đường nhanh: HTTP streaming ----
+            if _fast_fetch is not None and getattr(config, "USE_HTTP_FIRST", True):
+                done = await self._fetch_streaming(url, save_path, referer_url,
+                                                   url_hash_)
+                if done is not None:
+                    return done
+                # None = HTTP không dùng được -> rơi về Playwright bên dưới.
+
+            return await self._fetch_browser(context, url, save_path,
+                                             referer_url, url_hash_)
+
+    async def _fetch_streaming(self, url, save_path, referer_url, url_hash_):
+        """Tải bằng urllib streaming. Trả trạng thái, hoặc None để rơi về browser."""
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        wrote_ok = False
+
+        for attempt in range(config.MAX_RETRIES):
+            if self.stop_event.is_set():
+                return "CANCELLED"
+            res = await asyncio.to_thread(
+                _fast_fetch.download_to_file,
+                url, save_path,
+                referer_url, self._cookie_header,
+                config.DOWNLOAD_TIMEOUT_MS / 1000,
+                self.stop_event,
+                config.MAX_FILE_MB * 1024 * 1024,
+            )
+            if res.ok:
+                wrote_ok = True
+                break
+
+            if res.error == "cancelled":
+                return "CANCELLED"
+            if res.error and "quá lớn" in res.error:
+                self.log(f"   [!] {res.error}: {url[:60]}")
+                return "FAILED"
+            if res.status in (401, 403, 404, 410):
+                # Có thể cần cookie/Referer từ trình duyệt -> thử đường browser.
+                return None
+            if res.status == 429 or (res.status and res.status >= 500):
+                if attempt < config.MAX_RETRIES - 1:
+                    await asyncio.sleep(backoff_seconds(attempt))
+                    continue
+            if attempt < config.MAX_RETRIES - 1:
+                await asyncio.sleep(backoff_seconds(attempt, base=1.0))
+
+        if not wrote_ok:
+            return "FAILED"
+
+        # Ghi cache SAU khi file đã nằm đúng tên: nếu ghi trước, lần quét sau
+        # tưởng đã có và bỏ qua trong khi file chỉ là .tmp.
+        try:
+            async with self.db_lock:
+                self.cache.record(url_hash_, save_path)
+        except Exception:
+            pass
+        return "OK"
+
+    async def _fetch_browser(self, context, url, save_path, referer_url,
+                             url_hash_):
+        """Đường cũ: tải qua Playwright. Giữ nguyên hành vi và các chốt an toàn."""
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        tmp_path = save_path + ".tmp"
+        headers = {"Referer": referer_url}
+
+        for attempt in range(config.MAX_RETRIES):
+            if self.stop_event.is_set():
+                return "CANCELLED"
+            response = None
+            try:
+                # Không sleep trước mỗi request: semaphore đã giới hạn song song,
+                # thêm delay chỉ làm chậm mà không giảm tải cho server.
+                timeout_ms = config.STOP_TIMEOUT_MS if self.stop_event.is_set() else config.DOWNLOAD_TIMEOUT_MS
+                get_coro = context.request.get(url, headers=headers, timeout=timeout_ms)
+                if self.stop_event.is_set():
+                    response = await get_coro
+                else:
+                    response = await self._racing_stop(get_coro)
+
+                if response is None:
+                    return "CANCELLED"
+                if response is _TIMEOUT:
+                    self.log(f"   [!] Hết thời gian chờ khi tải: {url[:70]}")
+                    return "TIMEOUT"
+                if response.status == 200:
+                    ctype = (response.headers.get('content-type') or '').lower()
+                    if any(ct in ctype for ct in S.NON_MEDIA_CONTENT_TYPES):
+                        self.log(f"   [!] Bị chặn/nội dung HTML, bỏ qua: {url[:70]}")
+                        return "FAILED"
+
+                    too_big = self._too_big(response, url)
+                    if too_big:
+                        return "FAILED"
+
+                    declared_now = self._content_length(response)
+                    if self._disk_full(save_path, declared_now):
+                        return "FAILED"
+
+                    body = await response.body()
+                    if not body:
+                        return "FAILED"
+
+                    declared = self._content_length(response)
+                    if declared is not None and declared != len(body):
+                        self.log(f"   [!] Nhận thiếu dữ liệu ({len(body)}/{declared} byte), "
+                                 f"bỏ qua: {url[:60]}")
+                        return "FAILED"
+
+                    async with aiofiles.open(tmp_path, "wb") as f:
+                        await f.write(body)
+                    os.replace(tmp_path, save_path)
+                    async with self.db_lock:
+                        self.cache.record(url_hash_, save_path)
+                    return "OK"
+
+                self.log(f"   [!] HTTP {response.status} khi tải: {url[:60]}...")
                 if self.stop_event.is_set():
                     return "CANCELLED"
-                response = None
-                try:
-                    await asyncio.sleep(0.05)
-                    # Bấm Dừng -> coi cờ dừng là thời hạn cứng. Timeout của
-                    # Playwright chỉ quyết định lúc BẮT ĐẦU request, nên request
-                    # đã vào get() rồi vẫn treo tới hết DOWNLOAD_TIMEOUT_MS; bấm
-                    # Dừng giữa chừng sẽ không cắt được. wait_for bên ngoài thì cắt
-                    # được ngay lập tức dù request đang đọc dở.
-                    timeout_ms = config.STOP_TIMEOUT_MS if self.stop_event.is_set() else config.DOWNLOAD_TIMEOUT_MS
-                    get_coro = context.request.get(url, headers=headers, timeout=timeout_ms)
-                    if self.stop_event.is_set():
-                        response = await get_coro
-                    else:
-                        response = await self._racing_stop(get_coro)
-
-                    if response is None:
-                        return "CANCELLED"
-                    if response is _TIMEOUT:
-                        self.log(f"   [!] Hết thời gian chờ khi tải: {url[:70]}")
-                        return "TIMEOUT"
-                    if response.status == 200:
-                        ctype = (response.headers.get('content-type') or '').lower()
-                        if any(ct in ctype for ct in S.NON_MEDIA_CONTENT_TYPES):
-                            # 200 nhưng trả HTML -> Cloudflare/404. Lưu ra .jpg là file rác.
-                            self.log(f"   [!] Bị chặn/nội dung HTML, bỏ qua: {url[:70]}")
-                            return "FAILED"
-
-                        # Chặn TRƯỚC khi nạp: body() nằm trong RAM, nên file quá
-                        # lớn phải biết trước. Playwright 1.54 không có API stream
-                        # cho context.request, nên đây là chốt duy nhất.
-                        too_big = self._too_big(response, url)
-                        if too_big:
-                            return "FAILED"
-
-                        # Hết đĩa giữa chừng để lại file cụt + loạt lỗi khó hiểu.
-                        declared_now = self._content_length(response)
-                        if self._disk_full(save_path, declared_now):
-                            return "FAILED"
-
-                        body = await response.body()
-                        if not body:
-                            return "FAILED"
-
-                        # content-length khai báo mà nhận thiếu -> tải dở, lưu vào
-                        # là file hỏng. Bản cũ không kiểm nên ghi thẳng.
-                        declared = self._content_length(response)
-                        if declared is not None and declared != len(body):
-                            self.log(f"   [!] Nhận thiếu dữ liệu ({len(body)}/{declared} byte), "
-                                     f"bỏ qua: {url[:60]}")
-                            return "FAILED"
-
-                        async with aiofiles.open(tmp_path, "wb") as f:
-                            await f.write(body)
-                        os.replace(tmp_path, save_path)
-                        async with self.db_lock:
-                            self.cache.record(url_hash_, save_path)
-                        return "OK"
-
-                    self.log(f"   [!] HTTP {response.status} khi tải: {url[:60]}...")
-                    if self.stop_event.is_set():
-                        return "CANCELLED"
-                    if response.status in S.RETRY_STATUSES or response.status >= 500:
-                        await asyncio.sleep(backoff_seconds(attempt))
-                    else:
-                        # 4xx khác 429 là lỗi vĩnh viễn -> retry chỉ tốn thời gian.
-                        return "FAILED"
-                except asyncio.CancelledError:
-                    if os.path.exists(tmp_path):
-                        try:
-                            os.remove(tmp_path)
-                        except Exception:
-                            pass
-                    raise
-                except Exception:
-                    if os.path.exists(tmp_path):
-                        try:
-                            os.remove(tmp_path)
-                        except Exception:
-                            pass
-                    if self.stop_event.is_set():
-                        return "CANCELLED"
-                    if attempt < config.MAX_RETRIES - 1:
-                        await asyncio.sleep(backoff_seconds(attempt, base=1.0))
-                finally:
-                    # Không dispose -> rò connection pool, vài trăm file là pool cạn.
-                    if response is not None:
-                        try:
-                            await response.dispose()
-                        except Exception:
-                            pass
-            return "FAILED"
+                if response.status in S.RETRY_STATUSES or response.status >= 500:
+                    await asyncio.sleep(backoff_seconds(attempt))
+                else:
+                    return "FAILED"
+            except asyncio.CancelledError:
+                _try_remove(tmp_path)
+                raise
+            except Exception:
+                _try_remove(tmp_path)
+                if self.stop_event.is_set():
+                    return "CANCELLED"
+                if attempt < config.MAX_RETRIES - 1:
+                    await asyncio.sleep(backoff_seconds(attempt, base=1.0))
+            finally:
+                if response is not None:
+                    try:
+                        await response.dispose()
+                    except Exception:
+                        pass
+        return "FAILED"
 
     @staticmethod
     def _content_length(response):

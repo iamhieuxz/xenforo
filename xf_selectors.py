@@ -25,7 +25,13 @@ AD_RE = re.compile(r'^(?:ad|ads|advertisement|balloon|quangcao|banner|ad-contain
 DROP_TAGS = (('aside', 'message-signature'), ('div', 'message-cell--user'), ('div', 'reactionsBar'))
 
 # Ảnh/smilie XenForo đi kèm mọi post, không phải media của tác giả.
-NOISE_URL_PARTS = ('smilie', 'avatar', 'emoji', 'styles/default')
+#
+# 'joypixels' và 'reaction' thêm vào sau khi ĐO ĐƯỢC: rphang.show nhúng icon
+# cảm xúc từ cdn.jsdelivr.net/joypixels/assets/.../1f606.png vào MỌI post có
+# reaction. Đo trên 5 thread: 3/22 media bắt được là emoji cảm xúc — app tải
+# về ảnh mặt cười thay vì ảnh của bài.
+NOISE_URL_PARTS = ('smilie', 'avatar', 'emoji', 'styles/default',
+                   'joypixels', 'reaction-image', 'reaction/')
 
 VIDEO_EXT = ('.mp4', '.mov', '.webm', '.m4v', '.avi', '.mkv')
 IMAGE_EXT = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp')

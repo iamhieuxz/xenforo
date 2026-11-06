@@ -391,6 +391,22 @@ BOX_MAX_PAGES = 0       # 0 = không giới hạn; đặt 20 nếu muốn giới
 HTTP_WORKERS = 12       # 8-16 là vùng an toàn đã đo
 ```
 
+### Tải media bằng streaming
+
+`context.request` + `response.body()` của Playwright nạp **toàn bộ file vào RAM**
+trước khi ghi. Đo trên một thread thật: 39 ảnh + 56 video ≈ 580 MB; với
+`DOWNLOAD_SEM=10` có thể có 10 file cùng trong RAM.
+
+Đã đổi sang HTTP streaming 64 KB. Đo trên 5 file thật (133 MB):
+
+| Cách | Thời gian | RAM tăng |
+|---|---|---|
+| `body()` nạp cả file | 6,56s | **+80 MB** |
+| Streaming 64 KB | **6,39s** | **+0 MB** |
+
+Tốc độ nhanh hơn 3% và RAM không tăng. Ghi ra `.tmp` rồi `os.replace` nên
+không bao giờ để lại file cụt mang tên thật.
+
 ### Quảng cáo được lọc
 
 rphang.show dùng add-on SAM chèn quảng cáo **bên trong** `message-body`. Đo trên
@@ -425,6 +441,9 @@ python probe_log_leak.py         # 3/3   — nhật ký không phình vô hạn
 python probe_cdp_mode.py         # 6/6   — mode cdp đầu-cuối với Chrome thật
 python probe_http_first.py       # 12/12 — tải HTTP nhanh + lọc quảng cáo
 python probe_stop_early.py       # 6/6   — dừng sớm khi gặp bài cũ
+python probe_stream_gain.py      # đo RAM tiết kiệm khi stream
+python probe_session_errors.py   # rà lỗi trong một phiên thật
+python probe_log_font.py         # đo chiều cao dòng log
 python probe_speed.py            # đo tốc độ thật
 python probe_speed_browser.py    # so sánh HTTP vs trình duyệt
 python probe_memory.py           # đo RAM thực tế

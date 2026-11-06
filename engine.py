@@ -321,6 +321,12 @@ class CrawlerEngine:
             pairs.append(f"{name}={c.get('value','')}")
 
         self._cookie_header = "; ".join(pairs)
+        # Truyền xuống downloader để nó tải media bằng HTTP streaming mà vẫn
+        # đúng danh tính (box riêng cần cookie).
+        try:
+            self.downloader._cookie_header = self._cookie_header
+        except Exception:
+            pass
         if pairs:
             self.log(f"[*] Đã lấy {len(pairs)} cookie từ phiên đang mở "
                      f"(dùng cho tải nhanh, không lộ giá trị).", "system")
