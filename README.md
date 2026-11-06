@@ -249,6 +249,7 @@ xenforo/
 ├── cache.py           # Cache SQLite: media đã tải + danh sách user local
 ├── browser_launcher.py# Dò trình duyệt, mở/kiểm tra cổng CDP
 ├── open_debug_chrome.py # Mở Chrome ở cổng 9222 với profile có session
+├── fast_fetch.py       # Tải HTML song song bằng HTTP (nhanh hơn trình duyệt)
 ├── open_debug_chrome.bat
 ├── session_source.py  # Profile trình duyệt: dò, kiểm tra khoá, copy
 ├── config.py          # Toàn bộ tham số nằm ở đây
@@ -336,6 +337,48 @@ python _check_palette.py
 
 Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn giữ bảng màu đã chọn.
 
+## Tốc độ
+
+App tải HTML bằng HTTP thuần trước, chỉ rơi về trình duyệt khi HTTP thất bại.
+Đo trên rphang.show (8 trang box):
+
+| Cách | Thời gian | Tốc độ |
+|---|---|---|
+| HTTP thuần, 8 luồng | 0,56s | **14,2 trang/giây** |
+| Trình duyệt, 8 song song | 0,69s | 11,6 trang/giây |
+| Trình duyệt, tuần tự | 3,59s | 2,2 trang/giây |
+
+HTTP không tốn RAM render (~55 MB/tab). Với 1.336 trang của hai box, HTTP
+8 luồng mất khoảng 95 giây.
+
+### Phiên đăng nhập được dùng lại
+
+Cookie lấy **trực tiếp từ trình duyệt đang mở** qua CDP, rồi gắn vào request
+HTTP. Không đọc file Cookies: khi Chromium đang chạy nó giữ khoá độc quyền trên
+đúng file đó (đo được: chỉ `Cookies` bị khoá, `Preferences`/`History` vẫn đọc
+được).
+
+### Chỉ quét bài mới
+
+`STOP_ON_KNOWN_THREAD = True`: dừng đọc trang box khi **cả trang** đều là bài
+đã có trong SQLite. Bài mới luôn nằm ở trang đầu, nên lần chạy sau chỉ đọc vài
+trang thay vì 989.
+
+Khoá nhận diện là **id số** của thread (`/t/<slug>.<id>/`), không phải slug —
+slug đổi khi chủ bài sửa tiêu đề, id thì không.
+
+```python
+STOP_ON_KNOWN_THREAD = True
+BOX_MAX_PAGES = 0       # 0 = không giới hạn; đặt 20 nếu muốn giới hạn
+HTTP_WORKERS = 12       # 8-16 là vùng an toàn đã đo
+```
+
+### Quảng cáo được lọc
+
+rphang.show dùng add-on SAM chèn quảng cáo **bên trong** `message-body`. Đo trên
+một thread: 9 khối `samCodeUnit`/`samItem`. Đã gộp vào `_strip_junk` — kiểm
+chứng: 9 khối bị gỡ, 39 ảnh + 56 video thật giữ nguyên.
+
 ## Kiểm thử
 
 ```bash
@@ -362,6 +405,10 @@ python probe_no_port.py          # 7/7   — app không mở cổng ở mode per
 python probe_image_block.py      # 5/5   — chặn ảnh không phá parser
 python probe_log_leak.py         # 3/3   — nhật ký không phình vô hạn
 python probe_cdp_mode.py         # 6/6   — mode cdp đầu-cuối với Chrome thật
+python probe_http_first.py       # 12/12 — tải HTTP nhanh + lọc quảng cáo
+python probe_stop_early.py       # 6/6   — dừng sớm khi gặp bài cũ
+python probe_speed.py            # đo tốc độ thật
+python probe_speed_browser.py    # so sánh HTTP vs trình duyệt
 python probe_memory.py           # đo RAM thực tế
 python audit_repro.py            # 4/4   — các lỗi P0 đã sửa
 ```

@@ -9,6 +9,10 @@ HERMETIC: setUpModule trỏ config.DOWNLOAD_DIR vào thư mục tạm trước k
 test nào chạy. Bản cũ để nguyên E:\\HIDE\\RPHANG, nên ba test dựng
 XenForoScannerApp thật đã mở và GHI crawler_cache.db của thư viện thật — vừa
 làm bẩn dữ liệu người dùng, vừa làm suite đỏ trên máy không có ổ đó (CI).
+
+Cũng tắt config.USE_HTTP_FIRST trong setUpModule: engine giờ tải HTML bằng HTTP
+trước, nếu bật thì test nào chạm open_page() sẽ gọi mạng thật -> suite treo hàng
+phút và phụ thuộc internet.
 """
 
 import os
@@ -38,15 +42,22 @@ def setUpModule():
     __init__ rồi mở MediaCache ngay, nên chỉ cần một test dựng app trước khi
     kịp đổi là DB thật bị mở.
     """
-    global _TEST_TMP
+    global _TEST_TMP, _ORIGINAL_HTTP_FIRST
     _TEST_TMP = tempfile.mkdtemp(prefix="v72_test_")
     config.DOWNLOAD_DIR = _TEST_TMP
     os.environ["RPHANG_DIR"] = _TEST_TMP
+    # Tắt tải HTTP thật: nếu bật, open_page() gọi mạng -> suite treo.
+    _ORIGINAL_HTTP_FIRST = getattr(config, "USE_HTTP_FIRST", True)
+    config.USE_HTTP_FIRST = False
 
 
 def tearDownModule():
     config.DOWNLOAD_DIR = _ORIGINAL_DOWNLOAD_DIR
     os.environ.pop("RPHANG_DIR", None)
+    try:
+        config.USE_HTTP_FIRST = _ORIGINAL_HTTP_FIRST
+    except NameError:
+        pass
     if _TEST_TMP:
         # Windows khoá file đang mở: nếu còn MediaCache chưa close thì rmtree
         # thất bại IM LẶNG (ignore_errors) và thư mục tạm ở lại mãi. Thử vài lần
@@ -538,7 +549,12 @@ class TestBoxScopeIsNotLeaked(unittest.TestCase):
 
         tmp = tempfile.mkdtemp(prefix="boxscope")
         real = config.DOWNLOAD_DIR
+        real_http = getattr(config, "USE_HTTP_FIRST", True)
         config.DOWNLOAD_DIR = tmp
+        # Test nay dung trinh duyet GIA (_Page), nen phai di duong trinh duyet.
+        # De USE_HTTP_FIRST=True thi open_page() goi mang that va tra page=None
+        # -> khong co thread nao duoc "mo" -> test do sai ly do.
+        config.USE_HTTP_FIRST = False
         try:
             async def run():
                 cache = MediaCache(os.path.join(tmp, "c.db"))
@@ -554,6 +570,7 @@ class TestBoxScopeIsNotLeaked(unittest.TestCase):
             asyncio.run(run())
         finally:
             config.DOWNLOAD_DIR = real
+            config.USE_HTTP_FIRST = real_http
             shutil.rmtree(tmp, ignore_errors=True)
 
         threads = [u for u in opened if "/threads/" in u]
@@ -2033,13 +2050,16 @@ class TestPendingIsBounded(unittest.TestCase):
                              "trần quá cao thì không còn tác dụng chặn")
 
     def test_engine_thread_worker_count_is_bounded(self):
-        """Số worker phải bằng THREAD_SEM, không phải số thread trong box."""
+        """Số worker phải bằng THREAD_SEM, không phải số thread trong box.
+
+        Logic worker đã được tách sang `_crawl_threads_of_author` để crawl_user
+        gọn hơn. Test kiểm ĐÚNG hàm chứa logic đó.
+        """
         import inspect
         import engine
-        src = inspect.getsource(engine.CrawlerEngine.crawl_user)
+        src = inspect.getsource(engine.CrawlerEngine._crawl_threads_of_author)
         self.assertIn("config.THREAD_SEM", src, "worker phải bám THREAD_SEM")
-        self.assertNotIn("for i, u in enumerate(sorted(thread_urls), 1)]",
-                         src, "không được quay lại gather một task cho mỗi thread")
+        self.assertIn("Queue", src, "phải dùng queue, không gather một task mỗi thread")
 
 
 class TestSuiteIsHermetic(unittest.TestCase):

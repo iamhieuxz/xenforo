@@ -77,6 +77,30 @@ SESSION_EXTRA_ARGS = ["--no-sandbox", "--disable-crash-reporter"]
 BLOCK_IMAGES = True     # chặn ảnh/font/media: chỉ tải HTML/CSS/JS cần thiết
 BLOCK_FONTS = True
 
+# ---------- Tốc độ dò ----------
+# Tải HTML bằng HTTP thuần, song song, KHÔNG qua trình duyệt.
+#
+# Đo được trên rphang.show (8 trang box):
+#     HTTP thuần, 8 luồng      0,56s  -> 14,2 trang/giây
+#     Trình duyệt, 8 song song 0,69s  -> 11,6 trang/giây
+# HTTP nhanh hơn và không tốn RAM render (~55 MB/tab). Hai box người dùng theo
+# dõi có 989 + 347 = 1.336 trang: HTTP 8 luồng khoảng 95 giây.
+#
+# Trình duyệt chỉ dùng khi HTTP thất bại (trang cần JS, hoặc bị thử thách).
+USE_HTTP_FIRST = True
+HTTP_WORKERS = 12       # số request song song; 8-16 là vùng an toàn đã đo
+HTTP_TIMEOUT = 30
+HTTP_RETRIES = 2        # số lần thử lại khi lỗi mạng/5xx
+
+# Chỉ quét bài MỚI: dừng đọc trang box khi cả trang toàn thread đã có trong
+# SQLite. 1.336 trang là quá nhiều để quét lại mỗi lần; bài mới luôn nằm ở
+# trang đầu.
+STOP_ON_KNOWN_THREAD = True
+BOX_MAX_PAGES = 0       # 0 = không giới hạn; đặt 20 nếu chỉ muốn 20 trang mới nhất
+
+# Số trang thread tối đa được duyệt (thread có thể tới 19 trang).
+THREAD_MAX_PAGES = 0    # 0 = không giới hạn
+
 # Giới hạn cứng để RAM không vượt ngưỡng:
 MAX_OPEN_TABS = 4       # số tab Chromium được tồn tại cùng lúc (cứng, không chỉ semaphore)
 MEMORY_SOFT_LIMIT_MB = 1200   # vượt ngưỡng này thì log cảnh báo (không tự kill)
@@ -124,11 +148,18 @@ MAX_FILE_MB = 512
 
 # Danh sách box gợi ý trong dropdown. Ô nhập vẫn gõ tay được: đổi tên miền
 # (rphang.kim -> rphang.beer) hoặc đổi hẳn đường dẫn đều chạy, không ép vào list.
+#
+# Hai box đầu là box người dùng theo dõi, đặt lên trước cho tiện chọn. Đã đo
+# quy mô thật (2026-11): clip-sex-phim-sex có 31 thread/trang × 989 trang;
+# nhat-ky-may-mua có 30 × 347. Với STOP_ON_KNOWN_THREAD bật, lần chạy sau chỉ
+# đọc vài trang đầu là dừng.
 BOX_PRESETS = [
-    "https://rphang.kim/box/nhat-ky-may-mua.140/",
+    "https://rphang.show/box/clip-sex-phim-sex.86/",
+    "https://rphang.show/box/nhat-ky-may-mua.140/",
+    "https://rphang.beer/box/clip-sex-phim-sex.86/",
     "https://rphang.beer/box/nhat-ky-may-mua.140/",
+    "https://rphang.kim/box/nhat-ky-may-mua.140/",
     "https://rphang.beer/box/thap-cam-box.6/",
     "https://rphang.beer/box/thap-cam-mien-bac.99/",
     "https://rphang.beer/box/some-swing-yoni-mien-bac.116/",
-    "https://rphang.beer/box/clip-sex-phim-sex.86/",
 ]

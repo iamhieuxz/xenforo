@@ -121,6 +121,29 @@ def is_noise_url(src):
     return any(x in src.lower() for x in S.NOISE_URL_PARTS)
 
 
+# Class của add-on quảng cáo SAM (Sponsored Ad Manager) trên rphang.show.
+# Đo được: một thread có 15 khối `samCodeUnit` và 19 `samItem` nằm NGAY BÊN
+# TRONG `message-body`, xen giữa nội dung thật. Không loại thì banner quảng cáo
+# bị coi là media của bài và bị tải về.
+SAM_AD_CLASSES = ("samCodeUnit", "samItem", "samAd", "samSponsored",
+                  "samVideoOverlay")
+
+
+def strip_ads(soup):
+    """Xoá quảng cáo của add-on SAM khỏi soup, tại chỗ.
+
+    Gọi TRƯỚC khi bóc media. XenForo chuẩn không có các class này nên hàm
+    không làm gì trên site khác — an toàn để gọi vô điều kiện.
+    """
+    removed = 0
+    for cls in SAM_AD_CLASSES:
+        for node in soup.find_all(class_=cls):
+            if node.parent is not None:
+                node.decompose()
+                removed += 1
+    return removed
+
+
 def resolve_author(soup):
     """Tác giả gốc của thread."""
     node = soup.select_one('.p-description a.username')
@@ -222,6 +245,13 @@ def _strip_junk(post):
     # chính thẻ media không đủ: phải gỡ cả wrapper.
     for el in post.find_all(['div', 'aside', 'section', 'ins'], class_=S.AD_RE):
         el.decompose()
+    # Add-on SAM trên rphang.show chèn quảng cáo NGAY TRONG .message-body, xen
+    # giữa nội dung thật. Đo được trên một thread: 15 khối samCodeUnit, 19
+    # samItem — trong đó có banner và video quảng cáo. Không gỡ thì chúng bị
+    # coi là media của bài và bị tải về.
+    for cls in SAM_AD_CLASSES:
+        for el in post.find_all(class_=cls):
+            el.decompose()
     for tag, cls in S.DROP_TAGS:
         for el in post.find_all(tag, class_=cls):
             el.decompose()
@@ -411,6 +441,29 @@ def thread_meta(soup):
 
     d = thread_start_date(soup)
     return title, (d.strftime('%Y-%m-%d') if d else "")
+
+
+def thread_key(url):
+    """Khoá ổn định của một thread, dùng để nhớ "đã xử lý xong".
+
+    Lấy phần id số ở cuối đường dẫn. Hai dạng đều gặp trên rphang.show:
+        /t/<slug>.<id>/           (theme UI.X)
+        /threads/<slug>.<id>/     (XenForo chuẩn)
+        /t/<slug>.<id>/page-3      (khi đang ở trang sau)
+
+    Dùng id chứ không dùng slug: slug đổi khi chủ bài sửa tiêu đề, còn id thì
+    không. Dùng slug làm khoá sẽ khiến bài cũ bị coi là bài mới sau mỗi lần
+    sửa tiêu đề, và tải lại toàn bộ.
+    """
+    if not url:
+        return ""
+    import re as _re
+    m = _re.search(r"\.(\d+)(?:/|$|\?)", url)
+    if m:
+        return m.group(1)
+    # Dự phòng: lấy cụm số dài nhất ở cuối
+    m = _re.search(r"/(\d+)/?$", url.split("?")[0])
+    return m.group(1) if m else ""
 
 
 def thread_folder(base_dir, author, title, date_prefix):

@@ -16,6 +16,11 @@ import session_source
 import xenforo_parse as X
 from downloader import Downloader, plan_jobs, count_files, index_folder
 
+try:
+    import fast_fetch as _fast_fetch
+except Exception:      # thiếu module thì rơi về trình duyệt, không chết app
+    _fast_fetch = None
+
 
 class CrawlerEngine:
     def __init__(self, cache, log, stop_event, download_dir=None):
@@ -39,6 +44,7 @@ class CrawlerEngine:
         self.user_semaphore = asyncio.Semaphore(config.USER_SEM)
         self.active_pages = set()
         self._browser = None        # giữ để đóng ở close_browser()
+        self._cookie_header = ""    # cookie lấy từ trình duyệt, cho HTTP-first
 
     # ---------- trình duyệt ----------
     async def connect(self, p):
@@ -192,7 +198,18 @@ class CrawlerEngine:
             return None
 
     async def open_page(self, context, url, retries=None):
-        """Mở tab và trả về (page, soup). soup=None nến hết retry."""
+        """Mở tab và trả về (page, soup). soup=None nến hết retry.
+
+        Ở chế độ HTTP-first, hàm này KHÔNG mở tab: tải HTML bằng HTTP rồi trả
+        (None, soup). Chỗ gọi phải chịu được page=None — close_page(None) là
+        no-op. Nhờ vậy dò box nhanh gấp ~1,2× và không tốn RAM render.
+        """
+        if getattr(config, "USE_HTTP_FIRST", True):
+            soup = await self.fetch_soup(url)
+            if soup is not None:
+                return None, soup
+            # HTTP thất bại -> rơi về trình duyệt (trang cần JS, bị thử thách...).
+
         page = await context.new_page()
         self.active_pages.add(page)
         retries = config.MAX_RETRIES if retries is None else retries
@@ -222,8 +239,32 @@ class CrawlerEngine:
             raise
         return page, soup
 
+    async def fetch_soup(self, url):
+        """Tải HTML bằng HTTP thuần và trả soup, hoặc None nếu thất bại.
+
+        Đo được: HTTP 8 luồng 14,2 trang/giây so với trình duyệt 11,6 — và
+        không tốn ~55 MB RAM mỗi tab. Box công khai không cần JS để dựng danh
+        sách thread, nên HTTP đủ.
+        """
+        if not _fast_fetch:
+            return None
+        try:
+            res = await asyncio.to_thread(
+                _fast_fetch.fetch_one, url,
+                cookie=self._cookie_header)
+        except Exception:
+            return None
+        if not res.ok or not res.text:
+            return None
+        return X.make_soup(res.text)
+
     async def refetch(self, page, url):
-        """Tái sử dụng tab đang mở thay vì đóng/mở tab mới cho mỗi trang."""
+        """Tái sử dụng tab đang mở thay vì đóng/mở tab mới cho mỗi trang.
+
+        page=None (chế độ HTTP-first) thì tải bằng HTTP.
+        """
+        if page is None:
+            return await self.fetch_soup(url)
         for attempt in range(config.MAX_RETRIES):
             if self.stop_event.is_set():
                 return None
@@ -242,10 +283,49 @@ class CrawlerEngine:
 
     async def close_page(self, page):
         self.active_pages.discard(page)
+        if page is None:      # chế độ HTTP-first: không có tab nào để đóng
+            return
         try:
             await page.close()
         except Exception:
             pass
+
+    async def load_cookies(self, context):
+        """Lấy cookie từ phiên trình duyệt đang mở, để HTTP-first dùng lại.
+
+        ĐÂY LÀ CÁCH TẬN DỤNG PHIÊN CÓ SẴN. Không đọc file Cookies của trình
+        duyệt: khi Chromium đang chạy, nó giữ khoá ĐỘC QUYỀN trên đúng file đó
+        (đo được: chỉ Cookies bị khoá, Preferences/History/Web Data vẫn đọc
+        được), nên đọc file luôn thất bại. Nhưng Playwright hỏi được cookie qua
+        CDP/context — đó là phiên đang sống của chính bạn.
+
+        Cookie được gắn vào request HTTP sau đó, nên dò box nhanh mà vẫn đúng
+        danh tính. Không có nó thì box riêng sẽ trả trang đăng nhập thay vì nội
+        dung.
+        """
+        if context is None:
+            return
+        try:
+            cookies = await context.cookies()
+        except Exception as e:
+            self.log(f"[!] Không lấy được cookie từ trình duyệt: {e}")
+            return
+
+        seen = set()
+        pairs = []
+        for c in cookies:
+            name = c.get("name") or ""
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            pairs.append(f"{name}={c.get('value','')}")
+
+        self._cookie_header = "; ".join(pairs)
+        if pairs:
+            self.log(f"[*] Đã lấy {len(pairs)} cookie từ phiên đang mở "
+                     f"(dùng cho tải nhanh, không lộ giá trị).", "system")
+        else:
+            self.log("[*] Trình duyệt chưa có cookie — tải công khai.", "system")
 
     def emergency_cleanup(self):
         self.downloader.cancel_all()
@@ -267,6 +347,7 @@ class CrawlerEngine:
             context = await self.connect(p)
             if not context:
                 return
+            await self.load_cookies(context)
             try:
                 # Semaphore chỉ giữ trong lúc dò tác giả, KHÔNG giữ khi gọi
                 # crawl_thread: hàm đó tự acquire cùng semaphore. Giữ ở đây thì
@@ -323,6 +404,7 @@ class CrawlerEngine:
             context = await self.connect(p)
             if not context:
                 return
+            await self.load_cookies(context)
 
             async def user_worker():
                 """Nhận user từ queue tới khi hết.
@@ -387,6 +469,7 @@ class CrawlerEngine:
         visited = set()
         pages = 0
         skipped = 0
+        known = 0
         author_key = author.lower().strip()
 
         async with self.tab_semaphore:
@@ -402,6 +485,14 @@ class CrawlerEngine:
                         break
                     pages += 1
 
+                    # Đếm thread đã biết trong trang này. Dùng để dừng sớm:
+                    # hai box bạn theo dõi có 989 + 347 = 1.336 trang, quét lại
+                    # toàn bộ mỗi lần là không cần thiết vì bài mới luôn nằm ở
+                    # trang đầu. Chỉ dừng khi CẢ TRANG đều đã biết — nếu chỉ một
+                    # bài cũ mà dừng ngay thì sẽ bỏ sót bài mới nằm sau nó.
+                    page_total = 0
+                    page_known = 0
+
                     # Lọc NGAY ở danh sách: chỉ giữ thread có tác giả khớp.
                     # Trước đây gom hết link rồi mới mở từng thread để kiểm
                     # data-author -> box 100 trang là mở cả nghìn thread, rất
@@ -415,8 +506,26 @@ class CrawlerEngine:
                         found, _ = X.parse_thread_links(
                             X.soup_of_single(item), current)
                         for u in found:
-                            if u not in thread_urls:
-                                thread_urls.append(u)
+                            page_total += 1
+                            if u in thread_urls:
+                                continue
+                            if self._thread_already_done(u):
+                                page_known += 1
+                                known += 1
+                                continue
+                            thread_urls.append(u)
+
+                    if getattr(config, "STOP_ON_KNOWN_THREAD", True) and \
+                            page_total > 0 and page_known == page_total:
+                        self.log(f"   [✓] Trang {pages}: toàn bài đã có trong máy "
+                                 f"-> dừng đọc box (tiết kiệm "
+                                 f"{'các trang còn lại' if pages == 1 else 'thời gian'}).")
+                        break
+
+                    cap = getattr(config, "BOX_MAX_PAGES", 0) or 0
+                    if cap and pages >= cap:
+                        self.log(f"   [•] Đã đọc {pages} trang (giới hạn BOX_MAX_PAGES).")
+                        break
 
                     # Sang trang: phải GIỮ ?starter=..., nếu không XenForo trả về
                     # toàn bộ box. parse_thread_links đã lo việc này.
@@ -427,16 +536,48 @@ class CrawlerEngine:
                 await self.close_page(page)
 
         if not thread_urls:
-            self.log(f"   [•] {author.upper()}: không có bài nào trong box này"
-                     f" ({pages} trang đã đọc, {skipped} bài của người khác).")
+            self.log(f"   [•] {author.upper()}: không có bài MỚI nào trong box này"
+                     f" ({pages} trang đã đọc, {skipped} bài người khác, "
+                     f"{known} bài đã có trong máy).")
             return
-        self.log(f"   [+] {author.upper()}: {len(thread_urls)} thread trong "
-                 f"{pages} trang ({skipped} bài người khác đã bỏ qua).")
+        self.log(f"   [+] {author.upper()}: {len(thread_urls)} bài mới trong "
+                 f"{pages} trang ({skipped} bài người khác, {known} bài đã có).")
 
-        # N worker cố định nhận việc từ queue, thay vì tạo một task cho MỖI
-        # thread rồi gather tất cả: box 5.000 thread sinh 5.000 coroutine cùng
-        # sống (dù chỉ THREAD_SEM cái chạy), tốn bộ nhớ và làm chậm dừng.
-        # Queue rỗng + sentinel None để worker biết lúc kết thúc.
+        # Chạy các thread đã gom được. Thiếu lời gọi này thì crawl_user chỉ đọc
+        # box rồi kết thúc — không tải được gì.
+        await self._crawl_threads_of_author(context, thread_urls, author)
+
+    def _thread_already_done(self, thread_url):
+        """True nếu thread này đã được tải đủ trước đó.
+
+        Dựa vào `thread_index`: crawl_thread ghi ngày + folder SAU khi đọc hết
+        các trang của thread. Có bản ghi nghĩa là lần trước đã xử lý xong.
+
+        Khoá là ID số của thread (/t/<slug>.<id>/), không phải URL đầy đủ: slug
+        đổi khi chủ bài sửa tiêu đề, còn id thì không.
+        """
+        if not getattr(config, "STOP_ON_KNOWN_THREAD", True):
+            return False
+        cache = getattr(self, "cache", None)
+        if cache is None:
+            return False
+        key = X.thread_key(thread_url)
+        if not key:
+            return False
+        try:
+            return bool(cache.thread_date(key))
+        except Exception:
+            return False
+
+    async def _crawl_threads_of_author(self, context, thread_urls, author):
+        """Chạy N worker cố định nhận thread từ queue.
+
+        Không tạo một task cho MỖI thread rồi gather tất cả: box 5.000 thread
+        sinh 5.000 coroutine cùng sống (dù chỉ THREAD_SEM cái chạy), tốn bộ nhớ
+        và làm chậm nút Dừng.
+        """
+        if not thread_urls:
+            return
         ordered = sorted(thread_urls)
         workers = max(1, config.THREAD_SEM)
         queue = asyncio.Queue()
@@ -463,6 +604,7 @@ class CrawlerEngine:
 
         await asyncio.gather(*[thread_worker() for _ in range(workers)])
 
+
     # ---------- bóc + tải 1 thread ----------
     async def crawl_thread(self, context, thread_url, author, idx=1):
         author_key = author.lower().strip()
@@ -476,7 +618,12 @@ class CrawlerEngine:
                 # Ngày đã biết từ lần quét trước thì DÙNG LẠI. Nếu không, một lần
                 # server thiếu ngày (trang lỗi, theme khác) là folder đổi tên ->
                 # app coi là bài mới và tải lại toàn bộ dù file đã có.
-                thread_key = thread_url.split('?')[0].split('#')[0]
+                #
+                # Khoá phải là ID SỐ của thread, không phải URL đầy đủ: slug đổi
+                # khi chủ bài sửa tiêu đề, nên dùng URL làm khoá thì bài cũ bị
+                # coi là bài mới sau mỗi lần sửa tiêu đề -> tải lại toàn bộ.
+                thread_key = X.thread_key(thread_url) or \
+                    thread_url.split('?')[0].split('#')[0]
                 remembered = (self.cache.thread_date(thread_key)
                               if self.cache is not None else None)
                 if remembered:
@@ -491,8 +638,10 @@ class CrawlerEngine:
                     self.log("   [!] Không xác định được ngày mở bài; dùng folder "
                              "'khong-ngay' (sẽ ổn định cho các lần sau).")
                 os.makedirs(folder, exist_ok=True)
-                if self.cache is not None:
-                    self.cache.remember_thread_date(thread_key, date_prefix, folder)
+                # KHÔNG ghi thread_index ở đây. Ghi trước khi tải nghĩa là thread
+                # tải hỏng vẫn bị đánh dấu "đã xong", và tính năng dừng sớm sẽ
+                # bỏ qua nó ở lần quét sau -> media mất im lặng. Chỉ ghi sau khi
+                # đã đọc hết các trang của thread (xem cuối khối này).
 
                 current = thread_url
                 visited = set()
@@ -582,6 +731,13 @@ class CrawlerEngine:
                     "other_posts": other_posts, "pages": pages_done,
                     "folder": folder,
                 })
+
+                # Ghi mốc "đã xử lý xong" SAU khi đọc hết các trang và tải xong.
+                # Điều kiện: đã đọc được ít nhất 1 trang. Nếu tải hỏng ngay trang
+                # đầu (pages_done == 0) thì KHÔNG ghi, để lần sau còn thử lại —
+                # nếu ghi, tính năng dừng sớm sẽ bỏ qua thread này mãi mãi.
+                if self.cache is not None and pages_done > 0:
+                    self.cache.remember_thread_date(thread_key, date_prefix, folder)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
