@@ -828,8 +828,14 @@ class TestMediaCache(unittest.TestCase):
         """Cache cũ lưu basename -> phải bị bỏ qua thay vì dựng sai đường dẫn."""
         with tempfile.TemporaryDirectory() as d:
             c = MediaCache(os.path.join(d, 'c.db'))
-            c.conn.execute("INSERT OR REPLACE INTO media_index VALUES (?,?,?)",
-                           ('legacy', 'a.jpg', '2020'))
+            # Nêu TÊN CỘT, không dùng VALUES (?,?,?): bảng có thêm cột
+            # content_hash nên chèn theo vị trí sẽ hỏng ("table has 4 columns
+            # but 3 values supplied"). Dòng cũ để content_hash NULL — đúng như
+            # dữ liệu thật trước khi có cột này.
+            c.conn.execute(
+                "INSERT OR REPLACE INTO media_index "
+                "(url_clean_hash, filename, downloaded_at) VALUES (?,?,?)",
+                ('legacy', 'a.jpg', '2020'))
             c.conn.commit()
             self.assertIsNone(c.path_for('legacy'), "dữ liệu cũ kiểu basename phải bị bỏ qua")
             c.close()

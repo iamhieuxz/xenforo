@@ -10,3 +10,4 @@ pip-unpack-*/
 .tmpx/
 logs_*/
 session-*.log
+_dup_report.txt

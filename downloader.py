@@ -363,11 +363,41 @@ class Downloader:
         if not wrote_ok:
             return "FAILED"
 
+        # ---- Khử trùng lặp theo NỘI DUNG ----
+        # Cùng một ảnh có thể nằm ở hai URL (thumbnail và bản đầy đủ), và
+        # url_hash băm theo URL nên sinh hai file giống hệt. Đo trên ổ thật:
+        # 5 nhóm trùng đang phát sinh, 13,3 % dung lượng thư viện bị lặp.
+        #
+        # Ở đây đã tải xong nên có md5. Nếu nội dung này đã có ở file khác thì
+        # thay bản vừa tải bằng HARDLINK tới bản cũ: giữ đúng tên file trong
+        # folder này (người dùng vẫn thấy đủ), nhưng ổ đĩa không tốn thêm byte.
+        #
+        # Thứ tự an toàn: tạo hardlink ra file tạm TRƯỚC, chỉ khi thành công mới
+        # replace. Không bao giờ xoá bản vừa tải khi chưa có thay thế.
+        content_hash = getattr(res, "md5", "") or ""
+        if content_hash and self.cache is not None:
+            try:
+                existing = self.cache.path_for_content(content_hash,
+                                                       exclude=save_path)
+                if existing:
+                    link_tmp = save_path + ".lnk"
+                    _try_remove(link_tmp)
+                    try:
+                        os.link(existing, link_tmp)
+                        os.replace(link_tmp, save_path)
+                        self._deduped = getattr(self, "_deduped", 0) + 1
+                    except (OSError, NotImplementedError):
+                        # Khác ổ đĩa hoặc FS không hỗ trợ hardlink -> giữ bản
+                        # vừa tải. Không phải lỗi, chỉ là không tiết kiệm được.
+                        _try_remove(link_tmp)
+            except Exception:
+                pass
+
         # Ghi cache SAU khi file đã nằm đúng tên: nếu ghi trước, lần quét sau
         # tưởng đã có và bỏ qua trong khi file chỉ là .tmp.
         try:
             async with self.db_lock:
-                self.cache.record(url_hash_, save_path)
+                self.cache.record(url_hash_, save_path, content_hash or None)
         except Exception:
             pass
         return "OK"

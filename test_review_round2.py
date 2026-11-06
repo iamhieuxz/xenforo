@@ -295,5 +295,169 @@ class TestSessionLogWiring(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestContentHashDedup(unittest.TestCase):
+    """Khử trùng lặp theo NỘI DUNG (P1.2 trong DE-XUAT-CAI-TIEN.md).
+
+    VẤN ĐỀ ĐO ĐƯỢC: `url_hash()` băm theo URL, không theo nội dung. Cùng một
+    ảnh ở hai URL (thumbnail và bản đầy đủ) sinh hai hash -> hai file giống hệt.
+    Trên ổ thật: 416 nhóm trùng, 13,5 GB (13,3 %).
+
+    CÁCH SỬA: lưu md5 nội dung vào media_index; khi tải xong mà nội dung đã có
+    ở file khác thì thay bản mới bằng HARDLINK tới bản cũ -> 0 byte thêm.
+    """
+
+    def _cache(self):
+        from cache import MediaCache
+        tmp = tempfile.mkdtemp(prefix="ch_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        c = MediaCache(os.path.join(tmp, "c.db"))
+        self.addCleanup(c.close)
+        return c, tmp
+
+    def test_schema_has_content_hash(self):
+        c, _ = self._cache()
+        cols = {r[1] for r in c.conn.execute("PRAGMA table_info(media_index)")}
+        self.assertIn("content_hash", cols)
+
+    def test_migration_from_old_schema(self):
+        """DB cũ (3 cột) phải được nâng cấp, KHÔNG mất dữ liệu."""
+        import sqlite3
+        from cache import MediaCache
+        tmp = tempfile.mkdtemp(prefix="mig_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        db = os.path.join(tmp, "old.db")
+
+        conn = sqlite3.connect(db)
+        conn.execute("""CREATE TABLE media_index (
+            url_clean_hash TEXT PRIMARY KEY, filename TEXT, downloaded_at TEXT)""")
+        f = os.path.join(tmp, "old.jpg")
+        with open(f, "wb") as fh:
+            fh.write(b"X")
+        conn.execute("INSERT INTO media_index VALUES ('u', ?, '2020')", (f,))
+        conn.commit()
+        conn.close()
+
+        c = MediaCache(db)
+        try:
+            cols = {r[1] for r in c.conn.execute("PRAGMA table_info(media_index)")}
+            self.assertIn("content_hash", cols, "phải thêm được cột")
+            self.assertEqual(c.path_for("u"), os.path.abspath(f),
+                             "dữ liệu cũ phải còn dùng được")
+        finally:
+            c.close()
+
+    def test_path_for_content_returns_none_when_missing(self):
+        """File đã bị xoá khỏi đĩa thì không được trả về (hardlink sẽ hỏng)."""
+        c, tmp = self._cache()
+        f = os.path.join(tmp, "a.jpg")
+        with open(f, "wb") as fh:
+            fh.write(b"AAA")
+        c.record("u1", f, "md5x")
+        self.assertEqual(c.path_for_content("md5x"), os.path.abspath(f))
+        os.remove(f)
+        self.assertIsNone(c.path_for_content("md5x"))
+
+    def test_path_for_content_excludes_self(self):
+        """Không được trả về chính đường dẫn vừa tải (sẽ hardlink vào nó)."""
+        c, tmp = self._cache()
+        f = os.path.join(tmp, "a.jpg")
+        with open(f, "wb") as fh:
+            fh.write(b"AAA")
+        c.record("u1", f, "md5x")
+        self.assertIsNone(c.path_for_content("md5x", exclude=f))
+
+    def test_two_urls_same_content_same_inode(self):
+        """Hai URL khác nhau, cùng nội dung -> một inode (hardlink)."""
+        from cache import MediaCache
+        from downloader import Downloader
+        tmp = tempfile.mkdtemp(prefix="dd_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        c = MediaCache(os.path.join(tmp, "c.db"))
+        self.addCleanup(c.close)
+        d = Downloader(cache=c, log=lambda *a, **k: None,
+                       stop_event=threading.Event(),
+                       semaphore=asyncio.Semaphore(2),
+                       db_lock=asyncio.Lock())
+
+        # Ghi thẳng cache như thể file 1 đã tải trước đó, rồi kiểm tra
+        # path_for_content tìm ra nó.
+        f1 = os.path.join(tmp, "f1.jpg")
+        with open(f1, "wb") as fh:
+            fh.write(b"CONTENT")
+        import hashlib
+        h = hashlib.md5(b"CONTENT").hexdigest()
+        c.record("h1", f1, h)
+
+        found = c.path_for_content(h, exclude=os.path.join(tmp, "f2.jpg"))
+        self.assertEqual(found, os.path.abspath(f1))
+
+    def test_download_result_has_md5_field(self):
+        import fast_fetch
+        r = fast_fetch.DownloadResult()
+        self.assertEqual(r.md5, "", "mặc định rỗng, không phải None")
+        self.assertTrue(hasattr(r, "md5"))
+
+    def test_record_uses_named_columns(self):
+        """Ghi theo TÊN CỘT — chèn theo vị trí sẽ hỏng khi thêm cột."""
+        import inspect
+        import cache
+        src = inspect.getsource(cache.MediaCache.record)
+        self.assertIn("url_clean_hash, filename, downloaded_at", src)
+        self.assertNotIn("media_index VALUES", src)
+
+
+class TestCleanDuplicatesSafety(unittest.TestCase):
+    """Script dọn trùng lặp phải AN TOÀN: dry-run mặc định, không xoá nhầm."""
+
+    def test_default_is_dry_run(self):
+        import inspect
+        import clean_duplicates
+        src = inspect.getsource(clean_duplicates.main)
+        self.assertIn("--apply", src)
+        self.assertIn("DRY-RUN", src)
+
+    def test_no_apply_means_no_delete(self):
+        """Chạy không có --apply thì không được xoá file nào."""
+        import subprocess
+        tmp = tempfile.mkdtemp(prefix="safe_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        folder = os.path.join(tmp, "u")
+        os.makedirs(folder)
+        for name in ("[20240101_120000]_main_video_001.mp4",
+                     "[20240101_120000]_main_video_001_abc123.mp4"):
+            with open(os.path.join(folder, name), "wb") as fh:
+                fh.write(b"A" * 100)
+
+        before = len(os.listdir(folder))
+        r = subprocess.run(
+            [sys.executable, "clean_duplicates.py", "--dir", tmp],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120)
+        after = len(os.listdir(folder))
+        self.assertEqual(before, after,
+                         "dry-run KHÔNG được xoá file")
+        self.assertEqual(r.returncode, 0)
+
+    def test_different_content_not_deleted(self):
+        """Cùng tên gốc nhưng nội dung KHÁC nhau thì phải giữ cả hai."""
+        import subprocess
+        tmp = tempfile.mkdtemp(prefix="diff_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        folder = os.path.join(tmp, "u")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "a_media_001.jpg"), "wb") as fh:
+            fh.write(b"AAA")
+        with open(os.path.join(folder, "a_media_001_111111.jpg"), "wb") as fh:
+            fh.write(b"BBB")     # nội dung khác
+
+        subprocess.run(
+            [sys.executable, "clean_duplicates.py", "--dir", tmp,
+             "--apply", "--yes"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120)
+        self.assertEqual(len(os.listdir(folder)), 2,
+                         "nội dung khác nhau thì không được xoá")
+
+
 if __name__ == "__main__":
     unittest.main()

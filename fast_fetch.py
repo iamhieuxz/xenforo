@@ -20,6 +20,7 @@ nếu box riêng cần phiên, truyền cookie lấy từ phiên đang có. Hàm
 
 import asyncio
 import gzip
+import hashlib
 import os
 import random
 import ssl
@@ -235,7 +236,7 @@ CHUNK_SIZE = 64 * 1024
 class DownloadResult:
     """Kết quả tải một file về đĩa."""
 
-    __slots__ = ("status", "bytes", "error", "seconds", "content_type")
+    __slots__ = ("status", "bytes", "error", "seconds", "content_type", "md5")
 
     def __init__(self):
         self.status = 0
@@ -243,6 +244,10 @@ class DownloadResult:
         self.error = ""
         self.seconds = 0.0
         self.content_type = ""
+        # md5 nội dung, tính LUÔN trong lúc ghi nên không tốn I/O thêm.
+        # Dùng để nhận ra "file này đã có ở nơi khác" và hardlink thay vì giữ
+        # bản sao. Rỗng nếu tải lỗi hoặc không bật băm.
+        self.md5 = ""
 
     @property
     def ok(self):
@@ -255,7 +260,7 @@ class DownloadResult:
 
 
 def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
-                     stop_event=None, max_bytes=None):
+                     stop_event=None, max_bytes=None, want_md5=True):
     """Tải một file về đĩa bằng STREAMING, không nạp cả file vào RAM.
 
     VÌ SAO CẦN: `context.request.get(...)` của Playwright phải `await
@@ -285,6 +290,7 @@ def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
         return res
 
     written = 0
+    hasher = hashlib.md5() if want_md5 else None
     try:
         req = urllib.request.Request(url, headers=_headers(referer, cookie))
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -310,6 +316,8 @@ def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
                         res.error = f"vượt giới hạn {max_bytes//1024//1024} MB"
                         raise _TooBig()
                     f.write(chunk)
+                    if hasher is not None:
+                        hasher.update(chunk)
 
         res.bytes = written
         res.seconds = time.perf_counter() - t0
@@ -317,6 +325,8 @@ def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
             res.error = "file rỗng"
             _safe_remove(tmp_path)
             return res
+        if hasher is not None:
+            res.md5 = hasher.hexdigest()
         os.replace(tmp_path, save_path)
         return res
 
