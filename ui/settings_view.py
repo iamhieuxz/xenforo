@@ -5,19 +5,23 @@ import subprocess
 import threading
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QFileDialog
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QLabel, QFrame,
+    QScrollArea,
+)
 
 from qfluentwidgets import (
-    FluentIcon, TitleLabel, CaptionLabel, ComboBox,
-    TextEdit, Theme, setTheme, InfoBar, InfoBarPosition,
-    SettingCardGroup, SettingCard, PushSettingCard,
+    FluentIcon, ComboBox,
+    Theme, setTheme, InfoBar, InfoBarPosition,
+    SettingCard, PushSettingCard,
 )
 
 import config
 import browser_launcher
 import session_source
+from ui.theme import MacCard, IconBadge, style_page, style_scroll_area
 
-from ui.log_view import swallow
+
 class SettingsInterface(QWidget):
     """Giao diện Cài đặt theo chuẩn Fluent SettingCardGroup."""
 
@@ -27,26 +31,66 @@ class SettingsInterface(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        # Trang cài đặt có thể dài hơn cửa sổ: cuộn dọc, nền trong suốt để
+        # canvas xám của cửa sổ lộ ra.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setAutoFillBackground(False)
+        style_scroll_area(self.scroll)
+        outer.addWidget(self.scroll)
+
+        container = QWidget()
+        container.setAutoFillBackground(False)
+        self.scroll.setWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 16)
         layout.setSpacing(16)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        title_box.addWidget(TitleLabel("Cài đặt hệ thống", self))
-        caption = CaptionLabel("Tùy biến giao diện, thư mục lưu trữ, trình duyệt và giới hạn luồng cào", self)
-        caption.setTextColor(Qt.gray, Qt.gray)
+        title = QLabel("Cài đặt", container)
+        title.setObjectName("pageTitle")
+        caption = QLabel(
+            "Tùy biến giao diện, thư mục lưu trữ, trình duyệt và giới hạn luồng cào",
+            container)
+        caption.setObjectName("pageCaption")
+        title_box.addWidget(title)
         title_box.addWidget(caption)
         layout.addLayout(title_box)
 
+        def make_group(group_title, icon):
+            card = MacCard(container, padding=16, spacing=10)
+            head = QHBoxLayout()
+            head.setSpacing(10)
+            head.addWidget(IconBadge(icon, card, size=26, radius=8))
+            group_label = QLabel(group_title, card)
+            group_label.setObjectName("groupTitle")
+            head.addWidget(group_label)
+            head.addStretch(1)
+            card.body.addLayout(head)
+            rows = QVBoxLayout()
+            rows.setSpacing(0)
+            card.body.addLayout(rows)
+            layout.addWidget(card)
+            return card, rows
+
         # Nhóm Giao diện
-        group_ui = SettingCardGroup("Giao diện & Chủ đề", self)
+        group_ui, rows_ui = make_group(
+            "Giao diện & Chủ đề", FluentIcon.PALETTE)
         self.card_theme = SettingCard(
-            FluentIcon.PALETTE,
+            FluentIcon.BRIGHTNESS,
             "Chế độ màu",
             "Chuyển đổi giữa chế độ Tối, Sáng hoặc Tự động theo Windows",
             parent=group_ui
         )
+        self.card_theme.setFixedHeight(64)
         self.cmb_theme = ComboBox(self.card_theme)
         self.cmb_theme.addItems(["Tối (Dark Mode)", "Sáng (Light Mode)", "Tự động (Windows)"])
         saved = self.main_window.load_theme_setting()
@@ -59,11 +103,11 @@ class SettingsInterface(QWidget):
         self.cmb_theme.currentIndexChanged.connect(self._on_theme_changed)
         self.card_theme.hBoxLayout.addWidget(self.cmb_theme)
         self.card_theme.hBoxLayout.addSpacing(16)
-        group_ui.addSettingCard(self.card_theme)
-        layout.addWidget(group_ui)
+        rows_ui.addWidget(self.card_theme)
 
         # Nhóm Lưu trữ
-        group_storage = SettingCardGroup("Lưu trữ & Dữ liệu", self)
+        group_storage, rows_storage = make_group(
+            "Lưu trữ & Dữ liệu", FluentIcon.FOLDER)
         self.card_folder = PushSettingCard(
             text="Chọn thư mục",
             icon=FluentIcon.FOLDER,
@@ -71,12 +115,13 @@ class SettingsInterface(QWidget):
             content=self.main_window.download_dir,
             parent=group_storage
         )
+        self.card_folder.setFixedHeight(64)
         self.card_folder.clicked.connect(self._choose_download_dir)
-        group_storage.addSettingCard(self.card_folder)
-        layout.addWidget(group_storage)
+        rows_storage.addWidget(self.card_folder)
 
         # Nhóm Phiên đăng nhập
-        group_session = SettingCardGroup("Phiên đăng nhập", self)
+        group_session, rows_session = make_group(
+            "Phiên đăng nhập", FluentIcon.PEOPLE)
         self.card_login = PushSettingCard(
             text="Đăng nhập",
             icon=FluentIcon.PEOPLE,
@@ -84,12 +129,13 @@ class SettingsInterface(QWidget):
             content=self._session_summary(),
             parent=group_session
         )
+        self.card_login.setFixedHeight(64)
         self.card_login.clicked.connect(lambda: self._open_login_window())
-        group_session.addSettingCard(self.card_login)
-        layout.addWidget(group_session)
+        rows_session.addWidget(self.card_login)
 
         # Nhóm Trình duyệt & Cổng CDP
-        group_browser = SettingCardGroup("Trình duyệt", self)
+        group_browser, rows_browser = make_group(
+            "Trình duyệt", FluentIcon.APPLICATION)
         self.card_browser_launch = PushSettingCard(
             text="Mở trình duyệt Debug",
             icon=FluentIcon.APPLICATION,
@@ -98,12 +144,13 @@ class SettingsInterface(QWidget):
                     "(persistent) không cần cổng này.",
             parent=group_browser
         )
+        self.card_browser_launch.setFixedHeight(64)
         self.card_browser_launch.clicked.connect(self._launch_browser)
-        group_browser.addSettingCard(self.card_browser_launch)
-        layout.addWidget(group_browser)
+        rows_browser.addWidget(self.card_browser_launch)
 
         # Thông tin phiên bản
-        group_about = SettingCardGroup("Thông tin phần mềm", self)
+        group_about, rows_about = make_group(
+            "Thông tin phần mềm", FluentIcon.INFO)
         card_about = PushSettingCard(
             text="V72 Fluent Edition",
             icon=FluentIcon.INFO,
@@ -111,11 +158,12 @@ class SettingsInterface(QWidget):
             content="Phiên bản V72 nâng cấp kiến trúc PySide6 + PyQt-Fluent-Widgets.",
             parent=group_about
         )
+        card_about.setFixedHeight(64)
         card_about.button.setEnabled(False)
-        group_about.addSettingCard(card_about)
-        layout.addWidget(group_about)
+        rows_about.addWidget(card_about)
 
-        layout.addStretch()
+        layout.addStretch(1)
+        style_page(container)
 
     def _on_theme_changed(self, index: int):
         if index == 0:
@@ -225,7 +273,7 @@ class SettingsInterface(QWidget):
                 args = [exe, f"--user-data-dir={prof}"]
                 args += list(getattr(config, "SESSION_EXTRA_ARGS", []) or [])
                 # KHÔNG headless: người dùng cần thấy cửa sổ để đăng nhập.
-                proc = subprocess.Popen(args)
+                subprocess.Popen(args)
                 # Phat signal thay vi QTimer.singleShot: QTimer tao trong thread
                 # khong co event loop thi khong bao gio chay (da do).
                 self.main_window.sig_ui_login_opened.emit(
@@ -268,8 +316,8 @@ class SettingsInterface(QWidget):
             if not need:
                 if state["timer"] is not None:
                     state["timer"].stop()
-                self.append_log("[✓] Đã phát hiện phiên đăng nhập. "
-                                "Giờ có thể quét ẩn.", "success")
+                self.main_window.append_log("[✓] Đã phát hiện phiên đăng nhập. "
+                                            "Giờ có thể quét ẩn.", "success")
                 InfoBar.success(
                     title="Đã đăng nhập",
                     content="Phiên đã lưu. Bấm Quét để bắt đầu.",

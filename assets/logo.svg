@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#1E293B" />
+    </linearGradient>
+
+    <!-- Xenforo Orange Gradient -->
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF7A00" />
+      <stop offset="100%" stop-color="#E65100" />
+    </linearGradient>
+
+    <!-- Tech Blue/Cyan Gradient -->
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Glow Effect -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Shadow Effect -->
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <!-- Base Rounded Squircle App Icon Frame -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgGrad)" stroke="#334155" stroke-width="4" filter="url(#dropShadow)" />
+
+  <!-- Subtle Inner Tech Ring / Accent Line -->
+  <rect x="44" y="44" width="424" height="424" rx="88" fill="none" stroke="#1E293B" stroke-width="2" stroke-dasharray="8 8" opacity="0.6" />
+
+  <!-- Graphic Center Group -->
+  <g transform="translate(0, -6)">
+    <!-- Stylized XenForo 'X' Wings (Community Speech Bubbles / Dialogue Crossed) -->
+    
+    <!-- Top-Left to Bottom-Right Stroke -->
+    <path d="M 145 130 C 175 130 325 345 355 370 C 375 386 360 405 330 405 C 300 405 160 170 130 148 C 118 138 128 130 145 130 Z" 
+          fill="url(#blueGrad)" opacity="0.85" />
+    
+    <!-- Top-Right to Bottom-Left Stroke (Interlocking Xenforo Dialogue Wing) -->
+    <path d="M 367 130 C 337 130 187 345 157 370 C 137 386 152 405 182 405 C 212 405 352 170 382 148 C 394 138 384 130 367 130 Z" 
+          fill="url(#orangeGrad)" opacity="0.9" />
+
+    <!-- Modern Central Download Arrow Element (Bold, Crisp, Integrated) -->
+    <g filter="url(#dropShadow)">
+      <!-- Arrow Shaft -->
+      <path d="M 232 170 C 232 156 280 156 280 170 L 280 290 L 232 290 Z" fill="#F8FAFC" />
+      
+      <!-- Arrow Head -->
+      <path d="M 195 275 L 256 345 L 317 275 C 326 265 310 252 298 265 L 256 312 L 214 265 C 202 252 186 265 195 275 Z" fill="#F8FAFC" />
+
+      <!-- High-tech Speed / Download Arc Tray -->
+      <path d="M 180 360 C 220 375 292 375 332 360" fill="none" stroke="#38BDF8" stroke-width="12" stroke-linecap="round" />
+    </g>
+  </g>
+
+  <!-- Tech Indicator Glow Dot -->
+  <circle cx="256" cy="432" r="5" fill="#38BDF8" filter="url(#glow)" />
+</svg>

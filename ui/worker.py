@@ -5,7 +5,6 @@ import threading
 
 from PySide6.QtCore import QThread, Signal, QObject
 
-import config
 from cache import MediaCache
 from engine import CrawlerEngine
 
@@ -20,6 +19,8 @@ class WorkerSignals(QObject):
     sig_status = Signal(str, str, str)     # (status_text, color_type, detail)
     sig_stats = Signal(int, int, int, str) # (images, videos, errors, detail)
     sig_finished = Signal(bool, bool, str) # (is_stopped, had_error, detail)
+    sig_author_found = Signal(str)         # author name — tự động điền vào ô tác giả
+    sig_box_found = Signal(str)            # box URL — tự động điền vào ô chuyên mục
 
 
 class CrawlWorker(QThread):
@@ -60,6 +61,18 @@ class CrawlWorker(QThread):
             self._n_error += int(m_err.group(1))
         elif re.search(r"tệp lỗi", message):
             self._n_error += 1
+
+        # Tự động phát hiện chủ thớt từ log "Đã định danh chính xác tác giả gốc: AUTHOR"
+        # để điền vào ô Tên tác giả — user không cần gõ lại lần sau.
+        m_author = re.search(r"Đã định danh chính xác tác giả gốc:\s*(.+)", message)
+        if m_author:
+            self.signals.sig_author_found.emit(m_author.group(1).strip())
+
+        # Tự động phát hiện box URL từ log "Bài viết thuộc chuyên mục: URL"
+        # để điền vào ô Chuyên mục — user không cần chọn lại box lần sau.
+        m_box = re.search(r"Bài viết thuộc chuyên mục:\s*(.+)", message)
+        if m_box:
+            self.signals.sig_box_found.emit(m_box.group(1).strip())
 
         parts = []
         if self._n_image or self._n_video:

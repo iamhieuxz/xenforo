@@ -287,13 +287,20 @@ def build_args(exe, pdir=None):
     return args
 
 
-def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None):
+def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None,
+           require_port=True):
     """Mở trình duyệt ở cổng debug. Trả (thành công, thông báo).
 
     `browser` chọn đúng loại ("chrome"|"coccoc"); mặc định lấy config.CDP_BROWSER.
     KHÔNG dùng find_browser() trần: hàm đó trả ứng viên đầu tiên trong danh sách
     và danh sách xếp Cốc Cốc trước Chrome, nên app mở Cốc Cốc trắng dù người
     dùng đang dùng Chrome. Đó là nguồn gốc của "một đống bùi nhùi".
+
+    `require_port=False`: dùng lúc khởi động app — chỉ cần mở được trình duyệt
+    là đủ để cho người dùng vào app. Cổng CDP vẫn được chờ trong `wait_seconds`
+    để phiên quét chắc chắn dùng được, nhưng hết thời gian mà tiến trình còn
+    sống (hoặc cổng bị tiến trình khác giữ) thì trả thành công kèm cảnh báo,
+    KHÔNG chặn ở màn hình chờ.
 
     Khác bản cũ ở ba điểm:
     1. Không tin `is_port_open()` đơn thuần. Nếu cổng bị tiến trình KHÁC chiếm,
@@ -317,9 +324,11 @@ def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None):
     if state["state"] == "not_chromium":
         pid = _listening_pid(config.CDP_PORT)
         who = f" (PID {pid})" if pid else ""
-        return False, (f"Cổng {config.CDP_PORT} đang bị tiến trình khác chiếm{who}, "
-                       f"không phải Chromium. Tắt tiến trình đó hoặc đổi CDP_PORT "
-                       f"trong config.py.")
+        msg = (f"Cổng {config.CDP_PORT} đang bị tiến trình khác chiếm{who}, "
+               f"không phải Chromium.")
+        if not require_port:
+            return True, msg + " App vẫn tiếp tục; nếu quét lỗi, tắt tiến trình đó rồi mở lại."
+        return False, (msg + " Tắt tiến trình đó hoặc đổi CDP_PORT trong config.py.")
 
     # Chọn ĐÚNG loại trình duyệt. Không dùng find_browser() trần (xem docstring).
     if not exe:
@@ -352,6 +361,10 @@ def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None):
         if st["state"] == "ready":
             return True, f"Đã mở {browser_version(exe)} trên cổng {config.CDP_PORT}."
         if st["state"] == "not_chromium":
+            if not require_port:
+                return True, (f"Đã mở {os.path.basename(exe)}, nhưng cổng "
+                              f"{config.CDP_PORT} bị tiến trình khác chiếm. App vẫn "
+                              f"tiếp tục; nếu quét lỗi, tắt tiến trình đó rồi mở lại.")
             return False, (f"Cổng {config.CDP_PORT} bị tiến trình khác chiếm ngay sau khi "
                            f"mở {os.path.basename(exe)}.")
         if on_progress:
@@ -361,6 +374,10 @@ def launch(exe=None, wait_seconds=25.0, on_progress=None, browser=None):
                 pass
         time.sleep(0.3)
 
+    if not require_port and _launched_process.poll() is None:
+        return True, (f"Đã mở {os.path.basename(exe)}. Cổng {config.CDP_PORT} chưa "
+                      f"sẵn sàng nhưng app vẫn tiếp tục; nếu quét lỗi, đóng cửa sổ "
+                      f"{os.path.basename(exe)} cũ rồi mở lại app.")
     return False, (f"{os.path.basename(exe)} không mở cổng {config.CDP_PORT} sau "
                    f"{wait_seconds:.0f}s. Thử: tắt hết cửa sổ {os.path.basename(exe)} "
                    f"cũ rồi mở lại app.")

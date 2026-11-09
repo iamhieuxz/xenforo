@@ -5,6 +5,7 @@ Cấu trúc:
     log_view.py — widget nhật ký + bảng màu + swallow()
     crawler_view.py — trang quét chính
     settings_view.py — trang cài đặt
+    startup_overlay.py — màn hình chờ, chặn thao tác khi trình duyệt chưa sẵn sàng
     main_window.py   — cửa sổ chính
     __init__         — main() giữ đường chạy cũ: python gui_fluent.py
 

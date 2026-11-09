@@ -28,7 +28,6 @@ import os
 import re
 import sys
 import threading
-import time
 import traceback
 from datetime import datetime
 
@@ -338,7 +337,6 @@ def note_swallow(where, exc):
     swallow gọi 2 lần, file chỉ có 1 dòng). Giờ nếu đã có logger active thì
     ghi thẳng vào file; chưa có thì đệm cho drain_pending.
     """
-    global _active_logger
     entry = f"{where}: {type(exc).__name__}: {exc}"
     try:
         lg = _active_logger

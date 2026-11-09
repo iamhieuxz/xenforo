@@ -191,5 +191,55 @@ class TestMainWindowAndUIFlow(unittest.TestCase):
         self.assertEqual(self.window.load_theme_setting(), "dark")
 
 
+class TestCopyLogButton(unittest.TestCase):
+    """Hồi quy: nút "Sao chép" phải thật sự chép được, không ném NameError.
+
+    VÌ SAO CÓ TEST NÀY: khi tách gui_fluent.py thành package ui/ (P2.1),
+    module crawler_view.py dùng QApplication.clipboard() nhưng KHÔNG import
+    QApplication. 261 test vẫn xanh vì không test nào gọi _copy_log, nên lỗi
+    chỉ lộ ra khi người dùng bấm nút thật:
+
+        AttributeError: module 'ui.crawler_view' has no attribute 'QApplication'
+
+    Test dưới đây chốt cả hai tầng: (1) tên QApplication có trong namespace
+    của module — bắt đúng lớp lỗi thiếu import, không phụ thuộc clipboard;
+    (2) gọi _copy_log thật và đọc lại clipboard — bắt lỗi runtime.
+    """
+
+    def setUp(self):
+        self.window = gui_fluent.MainWindow(auto_browser=False)
+        self.ci = self.window.crawler_interface
+
+    def tearDown(self):
+        self.window.close()
+        QApplication.processEvents()
+        local_theme = os.path.join(os.getcwd(), ".xenforo_theme")
+        if os.path.exists(local_theme):
+            try:
+                os.remove(local_theme)
+            except OSError:
+                pass
+
+    def test_module_exposes_qapplication(self):
+        """Thiếu import là gốc của lỗi — kiểm thẳng vào namespace module."""
+        from ui import crawler_view
+        self.assertTrue(
+            hasattr(crawler_view, "QApplication"),
+            "ui/crawler_view.py phải import QApplication vì _copy_log dùng nó")
+
+    def test_copy_log_puts_text_on_clipboard(self):
+        self.window.append_log("[*] Dòng cần sao chép", "system")
+        self.ci._copy_log()
+
+        clip = QApplication.clipboard().text()
+        self.assertIn("Dòng cần sao chép", clip)
+
+    def test_copy_log_on_empty_log_does_not_raise(self):
+        """Nhật ký trống: phải đi nhánh cảnh báo, không được ném."""
+        self.ci._clear_log()
+        self.ci._copy_log()          # không assert nội dung, chỉ cần không ném
+        self.assertEqual(self.ci.log_edit.toPlainText(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

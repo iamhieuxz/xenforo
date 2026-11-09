@@ -11,3 +11,7 @@ pip-unpack-*/
 logs_*/
 session-*.log
 _dup_report.txt
+# Lựa chọn giao diện do người dùng lưu lúc chạy — không phải mã nguồn.
+.xenforo_theme
+# Box presets tùy chỉnh do người dùng thêm qua GUI.
+.xenforo_boxes

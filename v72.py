@@ -40,6 +40,8 @@ PALETTE = {
             "error": "#b42318", "summary": "#9a6700", "success": "#157f3d",
             "info": "#1d4ed8", "system": "#0e7490", "bulk": "#6d28d9",
             "skip": "#57534e", "dim": "#78716c",
+            "new": "#0b6e38",       # file mới tải — xanh lá đậm, khác success
+            "cached": "#64748b",    # file đã có sẵn — xám xanh trầm
         },
     },
     "warm": {
@@ -59,6 +61,8 @@ PALETTE = {
             "error": "#fca5a5", "summary": "#fcd34d", "success": "#86efac",
             "info": "#93c5fd", "system": "#67e8f9", "bulk": "#c4b5fd",
             "skip": "#a8a29e", "dim": "#a8a29e",
+            "new": "#6ee7a0",       # file mới tải — xanh lá sáng
+            "cached": "#a8a29e",    # file đã có sẵn — xám ấm
         },
     },
 }
@@ -109,9 +113,11 @@ _MARKER_TAGS = {
     "↓": "info",
     "•": "skip",
     "*": "info",
+    "▶": "new",       # file mới tải — xanh lá đậm/sáng
+    "◦": "cached",    # file đã có sẵn — xám trầm
 }
 
-_MARKER_RE = re.compile(r"^\W{0,4}\[([-!✓+↓•*])\]")
+_MARKER_RE = re.compile(r"^\W{0,4}\[([-!✓+↓•*▶◦])\]")
 
 
 def log_tag(message, tag=None):
@@ -654,22 +660,30 @@ class XenForoScannerApp:
         Engine đã in sẵn số liệu ở dòng tiến độ qua count_files(), ví dụ
         '8 ảnh và 2 video'. Đếm ở đây thay vì sửa engine: không đụng tầng crawl,
         chỉ đọc chuỗi nó đã in.
+
+        CỘNG DỒN, KHÔNG GHI ĐÈ: mỗi thread in dòng riêng, nên gán `=` là lấy
+        giá trị của thread CUỐI — thread 1 báo 8 ảnh, thread 2 báo 1 ảnh thì
+        dòng trạng thái chỉ còn '1 ảnh' dù phiên đã tải 9 (đo được trong
+        DANH-GIA-CODEBASE.md mục M2). Bản PySide6 (ui/worker.py) đã cộng dồn
+        từ trước; đây là chỗ Tk chưa theo kịp. Bộ đếm reset về 0 ở _launch()
+        cho mỗi phiên quét mới — thiếu reset thì cộng dồn sẽ vướng số của
+        phiên trước, nên hai thứ phải đi cùng nhau.
         """
         if tag in ("error", "summary") and message.lstrip().startswith("["):
             self._had_error = True
         m = re.search(r"(\d+)\s+ảnh", message)
         if m:
-            self._n_image = int(m.group(1))
+            self._n_image += int(m.group(1))
         m = re.search(r"(\d+)\s+video", message)
         if m:
-            self._n_video = int(m.group(1))
+            self._n_video += int(m.group(1))
         # count_files() gọi nhóm thứ ba là "tệp", và số lỗi đường truyền nằm ở
         # dòng "[!] ... 3 tệp lỗi" chứ không phải "3 lỗi".
         m = re.search(r"(\d+)\s+tệp lỗi", message)
         if m:
-            self._n_error = int(m.group(1))
+            self._n_error += int(m.group(1))
         elif re.search(r"tệp lỗi", message):
-            self._n_error = 1
+            self._n_error += 1
         parts = []
         if self._n_image or self._n_video:
             parts.append(f"{self._n_image} ảnh, {self._n_video} video")

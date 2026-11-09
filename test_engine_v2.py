@@ -382,13 +382,13 @@ class TestRescanFullSweep(unittest.TestCase):
         counts = self._run([self._thread_html(3), self._thread_html(3)])
         second = counts[1][1]
         self.assertIn("5 media", second, f"phải báo số media: {second}")
-        self.assertIn("bài của chủ thớt", second)
+        self.assertIn("bài chủ thớt", second)
         self.assertNotIn("trùng khớp", second)
 
     def test_other_authors_media_never_downloaded(self):
         counts = self._run([self._thread_html(0)])
         self.assertEqual(counts[0][0], 2, "chỉ media của chủ thớt: 2 ảnh")
-        self.assertIn("1 bài người khác bỏ qua", counts[0][1])
+        self.assertIn("1 bài khác bỏ qua", counts[0][1])
 
 
 class TestDetailedThreadReport(unittest.TestCase):
@@ -412,8 +412,8 @@ class TestDetailedThreadReport(unittest.TestCase):
         out = self._report({"ok": 0, "failed": 0, "image": 0, "video": 0, "file": 0},
                            {"images": 5, "author_posts": 3, "other_posts": 4, "pages": 2})
         self.assertIn("5 media", out)
-        self.assertIn("3 bài của chủ thớt", out)
-        self.assertIn("4 bài người khác bỏ qua", out)
+        self.assertIn("3 bài chủ thớt", out)
+        self.assertIn("4 bài khác bỏ qua", out)
         self.assertIn("2 trang", out)
         self.assertNotIn("trùng khớp", out,
                          "không được dùng câu mơ hồ 'trùng khớp' nữa")
@@ -421,7 +421,7 @@ class TestDetailedThreadReport(unittest.TestCase):
     def test_reports_downloaded_count(self):
         out = self._report({"ok": 3, "failed": 0, "image": 3, "video": 0, "file": 0},
                            {"images": 3, "author_posts": 1})
-        self.assertIn("tải mới", out)
+        self.assertIn("TẢI MỚI", out)
         self.assertIn("3 ảnh", out)
 
     def test_warns_when_disk_has_fewer_files(self):

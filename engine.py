@@ -45,6 +45,43 @@ class CrawlerEngine:
         self.active_pages = set()
         self._browser = None        # giữ để đóng ở close_browser()
         self._cookie_header = ""    # cookie lấy từ trình duyệt, cho HTTP-first
+        # Bộ đếm tổng cộng dồn toàn phiên — dùng cho báo cáo cuối.
+        # Reset mỗi lần crawl_users/crawl_link bắt đầu (xem _reset_session_stats).
+        self._session_stats = {
+            "new_image": 0, "new_video": 0, "new_file": 0,
+            "cached": 0,           # media đã có sẵn, không tải lại
+            "failed": 0,
+            "threads_done": 0,     # số thread đã xử lý xong
+        }
+
+    def _reset_session_stats(self):
+        """Reset bộ đếm tổng phiên về 0. Gọi TRƯỚC mỗi phiên quét mới."""
+        for k in self._session_stats:
+            self._session_stats[k] = 0
+
+    def _accumulate_session(self, stats, found=None):
+        """Cộng dồn stats của một thread vào bộ đếm tổng phiên.
+
+        `stats` từ downloader.gather(): {'ok','failed','image','video','file'}.
+        `found` từ crawl_thread: {'images','videos','files'} — tổng media phát hiện.
+        Số cached = found - ok (media thấy nhưng không cần tải vì đã có).
+
+        Guard: nếu _session_stats chưa khởi tạo (test dùng __new__), bỏ qua
+        thay vì ném AttributeError — _report_thread vẫn in log bình thường.
+        """
+        s = getattr(self, "_session_stats", None)
+        if s is None:
+            return
+        s["new_image"] += stats.get("image", 0)
+        s["new_video"] += stats.get("video", 0)
+        s["new_file"] += stats.get("file", 0)
+        s["failed"] += stats.get("failed", 0)
+        s["threads_done"] += 1
+        if found:
+            seen = found.get("images", 0) + found.get("videos", 0) + found.get("files", 0)
+            downloaded = stats.get("ok", 0)
+            cached = max(0, seen - downloaded)
+            s["cached"] += cached
 
     # ---------- trình duyệt ----------
     async def connect(self, p):
@@ -64,10 +101,36 @@ class CrawlerEngine:
         return await self._connect_persistent(p)
 
     async def _connect_persistent(self, p):
-        """Mở trình duyệt với profile cố định — không dùng cổng TCP."""
-        profile = session_source.resolve_profile()
+        """Mở trình duyệt với profile cố định — không dùng cổng TCP.
+
+        Khi USE_REAL_PROFILE = True (mặc định): dùng profile thật của Cốc Cốc/Chrome
+        → có sẵn cookie đăng nhập, không cần đăng nhập lại. ĐIỀU KIỆN: phải đóng
+        hết trình duyệt trước vì Chromium giữ khoá độc quyền trên file Cookies.
+
+        Khi USE_REAL_PROFILE = False: dùng profile riêng của app (trắng, phải đăng
+        nhập lần đầu qua nút "Đăng nhập" trong Cài đặt).
+        """
         browser = (getattr(config, "SESSION_BROWSER", "chrome") or "chrome").lower()
         exe = browser_launcher.find_browser_for(browser)
+
+        if not exe:
+            self.log(f"[-] Không tìm thấy {browser}. Cài nó, hoặc đặt "
+                     f"SESSION_BROWSER trong config.py sang trình duyệt khác.")
+            return None
+
+        # Chọn profile: thật hay riêng
+        use_real = getattr(config, "USE_REAL_PROFILE", True)
+        if use_real:
+            real_dir = session_source.find_installed_profiles().get(browser, {}).get("path", "")
+            if real_dir and os.path.isdir(real_dir):
+                profile = real_dir
+                self.log(f"[*] Dùng profile thật của {browser} (có sẵn cookie).", "system")
+            else:
+                self.log(f"[!] Không tìm thấy profile thật của {browser}, "
+                         f"rơi về profile riêng của app.")
+                profile = session_source.resolve_profile(browser)
+        else:
+            profile = session_source.resolve_profile(browser)
 
         if not exe:
             self.log(f"[-] Không tìm thấy {browser}. Cài nó, hoặc đặt "
@@ -348,6 +411,7 @@ class CrawlerEngine:
 
     # ---------- quét 1 link bài viết ----------
     async def crawl_link(self, input_url):
+        self._reset_session_stats()
         ok = True
         async with async_playwright() as p:
             context = await self.connect(p)
@@ -364,6 +428,7 @@ class CrawlerEngine:
                     page, soup = await self.open_page(context, first_url, retries=1)
                     try:
                         author = X.resolve_author(soup) if soup is not None else ""
+                        box_url = X.resolve_box_url(soup, first_url) if soup is not None else None
                     finally:
                         await self.close_page(page)
 
@@ -375,6 +440,8 @@ class CrawlerEngine:
                     ok = False
                     return
                 self.log(f"[✓] Đã định danh chính xác tác giả gốc: {author.upper()}")
+                if box_url:
+                    self.log(f"[✓] Bài viết thuộc chuyên mục: {box_url}")
 
                 # Dù bài đã có trong SQLite, vẫn chạy ĐẦY ĐỦ: duyệt hết trang,
                 # đọc hết comment của chủ thớt, đếm media rồi mới quyết định có
@@ -398,6 +465,7 @@ class CrawlerEngine:
 
     # ---------- quét nhiều user ----------
     async def crawl_users(self, user_list, box_url):
+        self._reset_session_stats()
         # Dùng dict thay vì biến cục bộ: user_worker là closure, gán `ok = False`
         # trong đó tạo biến CỤC BỘ của closure và biến ngoài không bao giờ đổi ->
         # banner vẫn báo "ĐÃ HOÀN TẤT" dù mọi user đều lỗi.
@@ -458,12 +526,39 @@ class CrawlerEngine:
         self._banner(state["ok"], "TOÀN BỘ TIẾN TRÌNH ĐỒNG BỘ CÁC USER")
 
     def _banner(self, ok, title):
-        self.log("\n========================================")
+        """Banner kết thúc phiên kèm TỔNG KẾT: số file mới/cached/lỗi.
+
+        Người dùng cần biết NGAY sau khi quét xong: tải được bao nhiêu ảnh,
+        bao nhiêu video, bao nhiêu file đã có sẵn. Không phải cuộn log tìm từng
+        dòng [▶] rồi cộng tay.
+        """
+        s = self._session_stats
+        new_total = s["new_image"] + s["new_video"] + s["new_file"]
+
+        self.log("\n" + "=" * 48)
         if ok and not self.stop_event.is_set():
-            self.log(f"[✓] {title} ĐÃ HOÀN TẤT!")
+            self.log(f"[✓] {title} ĐÃ HOÀN TẤT!", "success")
         else:
-            self.log(f"[!] {title} BỊ GIÁN ĐOẠN HOẶC DỪNG CƯỠNG BỨC!")
-        self.log("========================================\n")
+            self.log(f"[!] {title} BỊ GIÁN ĐOẠN HOẶC DỪNG CƯỠNG BỨC!", "summary")
+
+        # Tổng kết — chỉ in khi có ít nhất 1 thread đã xử lý
+        if s["threads_done"] > 0:
+            self.log("─" * 48)
+            parts = []
+            if s["new_image"]:
+                parts.append(f"{s['new_image']} ảnh")
+            if s["new_video"]:
+                parts.append(f"{s['new_video']} video")
+            if s["new_file"]:
+                parts.append(f"{s['new_file']} tệp")
+            new_str = ", ".join(parts) if parts else "0"
+            self.log(f"   [▶] Tải mới:  {new_str}", "new")
+            if s["cached"]:
+                self.log(f"   [◦] Đã có sẵn: {s['cached']} media", "cached")
+            if s["failed"]:
+                self.log(f"   [!] Lỗi:      {s['failed']} tệp", "error")
+            self.log(f"   Tổng: {s['threads_done']} bài đã xử lý")
+        self.log("=" * 48 + "\n")
 
     async def crawl_user(self, context, author, idx, total, box_url):
         self.log(f"\n👥 [USER {idx}/{total}] ĐỒNG BỘ DỮ LIỆU: {author.upper()}", "info")
@@ -739,10 +834,12 @@ class CrawlerEngine:
                 })
 
                 # Ghi mốc "đã xử lý xong" SAU khi đọc hết các trang và tải xong.
-                # Điều kiện: đã đọc được ít nhất 1 trang. Nếu tải hỏng ngay trang
-                # đầu (pages_done == 0) thì KHÔNG ghi, để lần sau còn thử lại —
-                # nếu ghi, tính năng dừng sớm sẽ bỏ qua thread này mãi mãi.
-                if self.cache is not None and pages_done > 0:
+                # Điều kiện: đã đọc được ít nhất 1 trang, KHÔNG bị dừng giữa chừng,
+                # và KHÔNG có lỗi tải. Nếu ghi khi dừng hoặc lỗi, tính năng STOP_ON_KNOWN_THREAD
+                # sẽ bỏ qua thread này mãi mãi lần sau → mất media.
+                if (self.cache is not None and pages_done > 0
+                    and not self.stop_event.is_set()
+                    and stats.get("failed", 0) == 0):
                     self.cache.remember_thread_date(thread_key, date_prefix, folder)
             except asyncio.CancelledError:
                 raise
@@ -752,19 +849,27 @@ class CrawlerEngine:
                 await self.close_page(page)
 
     def _report_thread(self, author, idx, stats, found=None):
-        """Báo cáo kết quả một thread: đã thấy bao nhiêu, tải mới bao nhiêu.
+        """Báo cáo kết quả một thread: phân biệt rõ file MỚI vs file ĐÃ CÓ.
 
-        Bản cũ chỉ nói "đã trùng khớp (SQLite Index Match)" khi không tải được
-        gì, nên người dùng không biết app đã thật sự quét hết comment của chủ
-        thớt hay chỉ lướt qua rồi bỏ. Giờ luôn in số post của chủ thớt đã đọc,
-        số media phát hiện, và số tệp có thật trên đĩa.
+        Ký hiệu:
+          [▶] = file mới tải (xanh lá) — người dùng thấy ngay cái gì vừa về
+          [◦] = file đã có sẵn (xám trầm) — không cần chú ý
+          [!] = lỗi (đỏ/cam)
+          [•] = không có media / thông tin phụ
+
+        Bản cũ dùng chung [✓] cho cả "tải mới" lẫn "đã có đủ", khiến người
+        dùng không phân biệt được khi lướt log nhanh. Giờ tách riêng.
         """
         found = found or {}
         failed = stats.get("failed", 0)
         downloaded = stats.get("ok", 0)
+        new_images = stats.get("image", 0)
+        new_videos = stats.get("video", 0)
+        new_files = stats.get("file", 0)
 
         seen_total = (found.get("images", 0) + found.get("videos", 0)
                       + found.get("files", 0))
+        cached = max(0, seen_total - downloaded)
         posts = found.get("author_posts", 0)
         others = found.get("other_posts", 0)
         pages = found.get("pages", 0)
@@ -782,39 +887,45 @@ class CrawlerEngine:
 
         tail = []
         if posts:
-            tail.append(f"{posts} bài của chủ thớt")
+            tail.append(f"{posts} bài chủ thớt")
         if others:
-            tail.append(f"{others} bài người khác bỏ qua")
+            tail.append(f"{others} bài khác bỏ qua")
         if pages:
             tail.append(f"{pages} trang")
         ctx = f" [{', '.join(tail)}]" if tail else ""
 
+        # Cộng dồn vào bộ đếm tổng phiên
+        self._accumulate_session(stats, found)
+
+        # --- Lỗi ---
         if failed:
-            self.log(f"   [!] Cảnh báo: {failed} tệp lỗi đường truyền trong bài này.")
-        # Exception từ task tải (không phải HTTP lỗi). Trước đây loại này chỉ
-        # hiện ra stderr, không vào log, không vào thống kê — nên khi tải hỏng
-        # hoàn toàn mà app vẫn báo "0 lỗi". Giờ in ra kèm loại lỗi để biết ngay
-        # là lỗi code hay lỗi mạng.
+            self.log(f"   [!] {failed} tệp lỗi đường truyền trong bài này.")
         for err in (stats.get("task_errors") or [])[:3]:
             self.log(f"   [!] Lỗi xử lý tệp: {err}")
+
+        # --- File MỚI tải ---
         if downloaded:
-            self.log(f"   [✓] {author.upper()}: Bài {idx} tải mới "
-                     + count_files(stats) + ctx)
-        elif seen_total and not self.stop_event.is_set():
-            # ĐÃ QUÉT ĐẦY ĐỦ, chỉ là không có gì mới. Nói rõ ra thay vì "trùng khớp".
-            disk = f", trên đĩa có {on_disk} tệp" if on_disk >= 0 else ""
-            self.log(f"   [•] {author.upper()}: Bài {idx} đã có đủ "
-                     f"{seen_total} media{disk}{ctx} — không cần tải lại.")
-        elif not seen_total and not self.stop_event.is_set():
-            self.log(f"   [•] {author.upper()}: Bài {idx} không có media nào{ctx}.")
+            parts = []
+            if new_images:
+                parts.append(f"{new_images} ảnh")
+            if new_videos:
+                parts.append(f"{new_videos} video")
+            if new_files:
+                parts.append(f"{new_files} tệp")
+            detail = ", ".join(parts[:-1]) + " và " + parts[-1] if len(parts) > 1 else (parts[0] if parts else "0 tệp")
+            self.log(f"   [▶] {author.upper()}: Bài {idx} TẢI MỚI {detail}{ctx}", "new")
+
+        # --- File ĐÃ CÓ SẴN ---
+        if cached and not self.stop_event.is_set():
+            disk_info = f", trên đĩa {on_disk} tệp" if on_disk >= 0 else ""
+            self.log(f"   [◦] {author.upper()}: Bài {idx} đã có sẵn {cached} media{disk_info}{ctx}", "cached")
+        elif not downloaded and not cached and not self.stop_event.is_set():
+            self.log(f"   [◦] {author.upper()}: Bài {idx} không có media nào{ctx}.", "cached")
+
+        # --- Cảnh báo đĩa ---
         if on_disk >= 0 and seen_total and on_disk < seen_total and not downloaded:
-            # Cache nói "đã có" nhưng đĩa thiếu -> đây là dấu hiệu dữ liệu hỏng,
-            # phải cảnh báo chứ không im lặng coi là xong.
             self.log(f"   [!] Đĩa chỉ có {on_disk}/{seen_total} tệp. Có thể file đã bị "
                      f"xoá hoặc di chuyển; chạy lại để tải bù.")
         elif on_disk > seen_total:
-            # Đĩa NHIỀU hơn số media phát hiện được: dấu hiệu của bản sao trùng từ
-            # các lần quét trước (tên file đổi vì timestamp khác). Không tự xoá,
-            # nhưng phải nói ra để người dùng biết mà dọn.
-            self.log(f"   [!] Trong folder có {on_disk} tệp nhưng bài chỉ có "
-                     f"{seen_total} media — có thể còn bản sao từ lần quét trước.")
+            self.log(f"   [!] Folder có {on_disk} tệp nhưng bài chỉ {seen_total} media "
+                     f"— có thể còn bản sao từ lần quét trước.")

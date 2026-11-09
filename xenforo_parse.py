@@ -498,3 +498,24 @@ def next_page_url(soup, page_url):
     """Link 'Trang sau' của trang hiện tại, hoặc None."""
     nxt = soup.find('a', class_=S.PAGENAV_NEXT_RE)
     return urljoin(page_url, nxt['href']) if nxt and nxt.get('href') else None
+
+
+def resolve_box_url(soup, page_url):
+    """Box URL từ breadcrumb của trang thread, hoặc None.
+
+    XenForo đặt breadcrumb trong nav.p-breadcrumbs. Link chứa '/box/' là
+    chuyên mục mà bài viết thuộc về. Dùng để tự động điền ô Box URL khi
+    user quét 1 bài viết — lần sau bấm "Quét tác giả" không cần chọn lại box.
+    """
+    if not soup:
+        return None
+    for a in soup.select(".p-breadcrumbs li a"):
+        href = a.get("href", "")
+        if "/box/" in href:
+            full = urljoin(page_url, href)
+            # Chuẩn hoá: bỏ query/fragment, giữ trailing slash
+            clean = full.split("?")[0].split("#")[0]
+            if not clean.endswith("/"):
+                clean += "/"
+            return clean
+    return None

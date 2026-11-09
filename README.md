@@ -1,54 +1,32 @@
 # XenForo Crawler V72
 
-Ứng dụng desktop quét media từ diễn đàn XenForo và tải về ổ. Viết bằng Python + Tkinter, điều khiển trình duyệt qua cổng debug CDP của Playwright.
+Ứng dụng desktop quét media từ diễn đàn XenForo và tải về ổ. Điều khiển trình duyệt qua Playwright, hỗ trợ Cốc Cốc / Chrome / Edge.
 
-Mục tiêu của dự án: gom ảnh, video và file đính kèm của một chuyên mục (box) hoặc một bài viết, tải song song, bỏ qua thứ đã có, và cho phép dừng ngay khi đang tải.
-
-## Mục lục
-
-- [Tính năng](#tính-năng)
-- [Yêu cầu](#yêu-cầu)
-- [Cài đặt](#cài-đặt)
-- [Chạy](#chạy)
-- [Cách dùng](#cách-dùng)
-- [Cấu trúc dự án](#cấu-trúc-dự-án)
-- [Luồng hoạt động](#luồng-hoạt-động)
-- [Cấu hình](#cấu-hình)
-- [Phím tắt](#phím-tắt)
-- [Giao diện](#giao-diện)
-- [Kiểm thử](#kiểm-thử)
-- [Xử lý sự cố](#xử-lý-sự-cố)
-- [Giới hạn đã biết](#giới-hạn-đã-biết)
+![Giao diện XenForo Crawler](assets/gui_screenshot.png)
 
 ## Tính năng
 
-- Quét theo chuyên mục: duyệt toàn bộ thread trong một box, mỗi thread một tab, giới hạn 5 tab chạy song song.
-- Quét theo bài viết: dán link một thread, lấy media ngay trong bài đó.
-- Quét đa luồng nhiều user: bấm một lần, app tự quét toàn bộ user đã có trên ổ.
-- Tải song song 10 request cùng lúc, tên file gồm timestamp bài viết, số thứ tự và tên gốc.
-- Cache SQLite ghi nhớ URL nào đã tải và nằm ở file nào, lần sau bỏ qua.
-- Dừng khẩn cấp: huỷ request đang treo trong khoảng 2 giây thay vì chờ hết timeout 40 giây.
-- Nhật ký có màu theo loại thông báo, lọc theo từ khoá, sao chép, xóa.
-- Hai bảng màu sáng và tối, đổi qua nút "Giao diện", nhớ lựa chọn giữa các lần mở.
+- **Quét theo chuyên mục**: duyệt toàn bộ thread trong box, giới hạn 5 tab song song
+- **Quét theo bài viết**: dán link thread, lấy media ngay trong bài đó
+- **Quét đa luồng nhiều user**: bấm một lần, tự động quét toàn bộ user đã có trên ổ
+- **Tải song song** 10 request cùng lúc, streaming 64KB (không nạp cả file vào RAM)
+- **Cache SQLite** ghi nhớ URL đã tải, lần sau bỏ qua
+- **Khử trùng lặp theo nội dung**: cùng ảnh ở 2 URL → hardlink, 0 byte thêm trên ổ
+- **Tự động điền tên tác giả + box URL** khi quét bài viết → lần sau không cần gõ lại
+- **Tìm kiếm tác giả** trong dropdown theo tên
+- **Lưu chuyên mục mới** vào danh sách preset để chọn nhanh lần sau
+- **Đổi domain nhanh** khi forum đổi tên miền (ô Domain + nút Áp dụng)
+- **Dừng khẩn cấp**: huỷ request đang treo trong ~2 giây
+- **Nhật ký có màu**, lọc theo từ khoá, sao chép, xóa
+- **Hai bảng màu** sáng/tối, nhớ lựa chọn giữa các lần mở
 
 ## Yêu cầu
 
 | Thành phần | Yêu cầu |
-| --- | --- |
-| Python | 3.10 trở lên |
-| Hệ điều hành | Windows (app dùng `ctypes` để bật thanh tiêu đề tối) |
-| Trình duyệt | Chrome, Cốc Cốc hoặc Edge, bản >= 136 |
-
-Chrome từ bản 136 trở lên từ chối cổng debug không phải cổng mặc định của chính profile đó. Vì vậy app luôn tự mở trình duyệt với `--user-data-dir` riêng, tách khỏi profile bạn đang dùng.
-
-Thư viện Python:
-
-```
-playwright==1.54.0
-aiofiles==25.1.0
-beautifulsoup4==4.15.0
-lxml==6.1.1
-```
+|---|---|
+| Python | 3.10+ |
+| Hệ điều hành | Windows |
+| Trình duyệt | Cốc Cốc, Chrome hoặc Edge >= 136 |
 
 ## Cài đặt
 
@@ -62,510 +40,169 @@ python -m venv .venv
 pip install playwright==1.54.0 aiofiles==25.1.0 beautifulsoup4==4.15.0 lxml==6.1.1
 ```
 
-App dùng Playwright để điều khiển trình duyệt có sẵn trên máy, nên **không cần**
-`playwright install` (không dùng browser do Playwright tải về).
+App dùng Playwright để điều khiển trình duyệt có sẵn trên máy, **không cần** `playwright install`.
 
 ## Chạy
 
-**1. Giao diện Windows 11 Fluent Design (Khuyên dùng - PySide6 + PyQt-Fluent-Widgets):**
-```bash
-python gui_fluent.py
-```
-Giao diện Acrylic/Mica hiện đại, thẻ bo góc, thanh tiến trình động, thông báo toast popup (InfoBar), trang Cài đặt tùy chỉnh thư mục lưu trữ và theme trực quan.
+### Cách 1: Qua start_app.bat (khuyên dùng)
 
-**2. Giao diện truyền thống Tkinter:**
+```bash
+start_app.bat
+```
+
+Script tự mở Cốc Cốc ở cổng debug 9222 với profile thật (có sẵn cookie đăng nhập), rồi mở app.
+
+> **Lưu ý:** Phải đóng hết Cốc Cốc trước khi chạy. Chromium chỉ đọc cờ `--remote-debugging-port` lúc khởi động.
+
+### Cách 2: Trực tiếp
+
+```bash
+python app.py
+```
+
+Yêu cầu Cốc Cốc đã được mở ở cổng 9222 trước (hoặc app sẽ tự thử mở).
+
+### Giao diện Tkinter (legacy)
+
 ```bash
 python v72.py
 ```
 
-Muốn chạy thử mà không đụng ổ thật, trỏ thư mục gốc sang nơi khác:
+### Thử nghiệm không đụng ổ thật
 
 ```bash
 set RPHANG_DIR=D:\test-rphang
-python gui_fluent.py
+python app.py
 ```
-
-## Hai chế độ điều khiển trình duyệt
-
-Đặt `BROWSER_MODE` trong `config.py`.
-
-### `cdp` (mặc định) — dùng phiên Cốc Cốc có sẵn
-
-**Mặc định dùng profile THẬT của Cốc Cốc**, nên có ngay cookie và phiên đăng
-nhập — không phải đăng nhập lại. Đo trên máy người dùng:
-
-```
-Profile Cốc Cốc: 783 cookie
-  xf_user có sẵn cho: rphang.show / .beer / .fish / .now / .shop
-                      xamvn.asia / .work / .lifestyle, thiendia5.com
-Profile riêng của app: chỉ 5 cookie
-```
-
-Cách chạy gọn nhất:
-
-```
-start_app.bat      <- mở Cốc Cốc ở cổng 9222, rồi mở app
-```
-
-Hoặc làm từng bước:
-
-```
-open_debug_chrome.bat        (hoặc: python open_debug_chrome.py)
-```
-
-Script tự kiểm tra: cổng đã mở chưa, Chrome có đang chạy không, profile có
-cookie đăng nhập chưa. Xem trạng thái mà không mở gì:
-
-```
-python open_debug_chrome.py --check
-```
-
-> **Phải đóng hết Chrome trước.** Chrome chỉ đọc cờ `--remote-debugging-port`
-> lúc khởi động, nên cửa sổ đã mở sẽ không có cổng debug. Dữ liệu và phiên
-> đăng nhập vẫn còn — chúng nằm trong profile, không phải trong tiến trình.
-
-```python
-BROWSER_MODE = "cdp"
-CDP_BROWSER = "coccoc"        # "chrome" | "coccoc" | "edge"
-USE_REAL_PROFILE = True       # dùng profile thật -> có sẵn session
-CDP_PORT = 9222
-```
-
-Đặt `USE_REAL_PROFILE = False` nếu muốn profile tách riêng của app — an toàn hơn
-nhưng phải đăng nhập lại từ đầu.
-
-### `persistent` — không cần cổng
-
-Playwright tự mở trình duyệt với một profile **của app** tại
-`%LOCALAPPDATA%\V72Crawler\session_<trình duyệt>`.
-
-> Đây là profile **trắng**: không cookie, không extension, không bookmark. Lần
-> đầu dùng phải đăng nhập lại từ đầu. Đó là lý do `cdp` mới là mặc định.
-
-- **Không dùng cổng TCP nào.** Playwright nói chuyện qua pipe.
-- **Đăng nhập một lần là dùng mãi.** Session lưu trong profile, sống qua các lần
-  mở/đóng (đã kiểm chứng: mở/đóng 3 lần liên tiếp vẫn còn cookie).
-- Nút **Đăng nhập** ở trang Cài đặt mở trình duyệt có cửa sổ để bạn đăng nhập,
-  rồi phiên quét sẽ dùng lại chính profile đó.
-
-```python
-BROWSER_MODE = "persistent"
-SESSION_BROWSER = "chrome"      # "chrome" | "coccoc" | "edge"
-SESSION_PROFILE = ""            # rỗng = dùng profile riêng của app
-SESSION_HEADLESS = True         # False để thấy cửa sổ khi quét
-```
-
-### `cdp` — đường cũ, giữ làm dự phòng
-
-Nối vào cổng debug của một trình duyệt đang chạy (`--remote-debugging-port`).
-Dùng khi môi trường không cho Playwright tự mở trình duyệt.
-
-> **Vì sao `persistent` là mặc định:** cổng TCP 9222 có ba vấn đề đã đo được —
-> (1) một tiến trình bất kỳ chiếm cổng làm app tưởng Chromium đã sẵn sàng;
-> (2) `localhost` resolve ra `::1` trước `127.0.0.1` nên request có thể bị từ chối;
-> (3) xung đột với mọi công cụ khác muốn dùng cổng 9222.
-
-### Giảm bộ nhớ và độ trễ
-
-Đo trên máy thật — **app chỉ dùng 19–31 MB, Chromium mới là chỗ ngốn RAM**:
-
-| Trạng thái | RAM Chromium |
-|---|---|
-| Vừa mở | 322 MB |
-| 5 tab | 650 MB |
-| 10 tab | 902 MB |
-| 20 tab | 1.397 MB |
-
-Mỗi tab ~55 MB. Các nút chỉnh trong `config.py`:
-
-```python
-BLOCK_IMAGES = True    # chặn ảnh/font ở tầng mạng — app chỉ cần DOM
-MAX_OPEN_TABS = 4      # số tab Chromium tồn tại cùng lúc
-```
-
-Chặn ảnh **không** làm mất media: parser đọc `data-src` trong DOM, không đọc
-ảnh đã render (đã kiểm chứng: 3/3 ảnh bóc được cả khi chặn).
-
-Nhật ký log bị giới hạn ở 20.000 ký tự. Đo được chi phí mỗi dòng của `QTextEdit`
-tỉ lệ với độ dài tài liệu:
-
-| Trần nhật ký | Chi phí/dòng |
-|---|---|
-| 20.000 ký tự | 0,29 ms |
-| 40.000 | 0,55 ms |
-| 120.000 | 1,71 ms |
-
-Đây là nguyên nhân "chạy xong vẫn lag": widget giữ hàng chục nghìn dòng và phải
-layout lại mỗi lần vẽ.
-
-### Dùng session đăng nhập có sẵn
-
-**Lần chạy đầu tiên app tự mở trình duyệt để bạn đăng nhập.** Bấm Quét khi chưa
-có phiên → app mở cửa sổ trình duyệt (không ẩn), bạn đăng nhập, đóng nó, app tự
-phát hiện và cho phép quét. Các lần sau chạy ẩn hoàn toàn.
-
-Cơ chế: app kiểm cookie `xf_user` trong profile trước mỗi lần quét. Không có
-cookie đó thì mọi request vào box riêng bị XenForo chuyển về trang đăng nhập —
-app sẽ tải HTML trang login thay vì media, rất nặng và không có kết quả.
-
-Ba cách, từ an toàn đến tiện:
-
-| Cách | An toàn | Session |
-|---|---|---|
-| Để trống `SESSION_PROFILE` (mặc định) | Cao nhất — profile riêng của app | Đăng nhập một lần qua nút **Đăng nhập** |
-| Trỏ vào profile **đã copy** | Cao — app chỉ ghi vào bản copy | Có sẵn, nhưng là bản chụp |
-| Trỏ vào profile **thật** của trình duyệt | Thấp — app ghi vào dữ liệu bạn đang dùng | Có sẵn, luôn mới nhất |
-
-```python
-# Ví dụ dùng profile Chrome có sẵn (phải ĐÓNG Chrome trước)
-SESSION_BROWSER = "chrome"
-SESSION_PROFILE = r"C:\Users\<bạn>\AppData\Local\Google\Chrome\User Data"
-```
-
-**Bắt buộc phải đóng trình duyệt trước.** Đo được: khi trình duyệt đang chạy nó
-giữ khoá độc quyền trên đúng file `Cookies` trong profile:
-
-```
-Network/Cookies        BI KHOÁ    <- độc quyền
-Preferences            đọc được
-History                đọc được
-Web Data               đọc được
-```
-
-Chỉ file `Cookies` bị khoá — không phải vấn đề quyền của tiến trình gọi, không có
-quyền nào vượt được. App sẽ báo rõ nếu phát hiện trình duyệt đang chạy.
-
-**Cảnh báo:** profile chứa cookie, mật khẩu đã lưu và lịch sử duyệt web. Chỉ dùng
-cách thứ ba khi bạn chấp nhận app ghi vào dữ liệu đó.
 
 ## Cách dùng
 
-1. **Link Chuyên Mục (Box URL)** — chọn trong dropdown hoặc gõ tay. Ô này dùng cho cả quét user và quét toàn bộ.
-2. **Username quét đơn** — dropdown liệt kê các user đã có trên ổ, lấy từ SQLite nên mở app là có ngay. Gõ tay cũng được.
-3. **Nhập Link Bài Viết (URL)** — dán link một thread để quét riêng bài đó.
+### Quét theo tác giả
 
-Ba nút bấm:
+1. Chọn hoặc nhập **Box URL** trong dropdown
+2. Chọn hoặc gõ **Tên tác giả** (có ô tìm kiếm để lọc nhanh)
+3. Bấm **Quét tác giả**
 
-| Nút | Việc |
-| --- | --- |
-| Quét 1 User | Quét chuyên mục, chỉ lấy media của một tác giả trong danh sách user |
-| Quét 1 Thớt | Quét một bài viết theo link bạn dán |
-| Cập nhật toàn bộ User | Quét lại toàn bộ user đang có trên ổ, chạy đa luồng |
+### Quét bài viết đơn
 
-Trong lúc chạy, ba nút trên bị vô hiệu hóa, chỉ còn "Dừng khẩn cấp". Góc trên phải hiện trạng thái (SẴN SÀNG / ĐANG QUÉT / ĐÃ DỪNG / CÓ LỖI) kèm số liệu đếm được: ảnh, video, lỗi.
+1. Dán link thread vào ô **Link bài viết**
+2. Bấm **Quét bài viết**
+3. App tự động điền tên tác giả + box URL vào các ô tương ứng
+4. Nếu box chưa có trong danh sách → bấm **Lưu chuyên mục** để thêm
+
+### Quét toàn bộ user
+
+1. Chọn Box URL
+2. Bấm **Quét lại tất cả tác giả** — app tự quét mọi user đã có trên ổ
+
+### Đổi domain
+
+Khi forum đổi tên miền (vd: `rphang.beer` → `rphang.show`):
+
+1. Gõ domain mới vào ô **Domain**
+2. Bấm **Áp dụng** — mọi preset và URL đang nhập tự động cập nhật
+
+### Reload danh sách tác giả
+
+Sau khi quét xong, bấm **Reload tác giả** để cập nhật dropdown mà không cần khởi động lại app.
 
 ## Cấu trúc dự án
 
 ```
 xenforo/
-├── gui_fluent.py      # Điểm vào chính: Giao diện Windows 11 Fluent Design (PySide6 + Fluent-Widgets)
-├── v72.py             # Điểm vào phụ: Giao diện Tkinter truyền thống
-├── engine.py          # Điều phối Playwright: duyệt box -> duyệt thread -> bóc media
-├── downloader.py      # Lập kế hoạch tải, tải song song, đếm thống kê
-├── xenforo_parse.py   # Bóc DOM XenForo (hàm thuần, không đụng mạng)
-├── xf_selectors.py    # Regex và hằng dùng chung cho phần bóc DOM (tránh đụng stdlib selectors)
-├── cache.py           # Cache SQLite: media đã tải + danh sách user local
-├── browser_launcher.py# Dò trình duyệt, mở/kiểm tra cổng CDP
-├── open_debug_chrome.py # Mở Chrome ở cổng 9222 với profile có session
-├── fast_fetch.py       # Tải HTML song song bằng HTTP (nhanh hơn trình duyệt)
-├── session_log.py      # Ghi nhật ký phiên ra file để debug
-├── check_log.py        # Đọc/lọc nhật ký phiên đã qua
-├── open_debug_chrome.bat
-├── session_source.py  # Profile trình duyệt: dò, kiểm tra khoá, copy
-├── config.py          # Toàn bộ tham số nằm ở đây
-├── test_v72.py        # 154 test cho core engine, parser, downloader, cache
-├── test_review_fixes.py   # 21 test hồi quy sau đợt review
-├── test_persistent_mode.py# 27 test cho chế độ persistent
-├── test_first_login.py    # 18 test cho đăng nhập lần đầu + bộ nhớ
-├── test_gui_fluent.py     # 8 test cho giao diện Qt
-├── _check_palette.py  # Self-check tương phản WCAG cho bảng màu Tkinter
-└── browser.lnk        # Shortcut trình duyệt, dùng tay khi cần
+├── app.py                     # Điểm vào chính
+├── gui_fluent.py              # Shim tương thích ngược
+├── v72.py                     # GUI Tkinter (legacy)
+├── config.py                  # Cấu hình tập trung
+│
+├── engine.py                  # Điều phối quét (box → thread → post)
+├── downloader.py              # Tải file song song, streaming, hardlink
+├── fast_fetch.py              # HTTP streaming (nhanh hơn trình duyệt)
+├── xenforo_parse.py           # Bóc DOM XenForo (hàm thuần)
+├── xf_selectors.py            # Regex/hằng số cho parser
+├── cache.py                   # SQLite cache + content hash
+├── browser_launcher.py        # Quản lý trình duyệt CDP
+├── session_source.py          # Profile trình duyệt
+├── session_log.py             # Nhật ký phiên ra file
+├── check_log.py               # Đọc/lọc nhật ký
+├── clean_duplicates.py        # Dọn file trùng theo nội dung
+├── open_debug_chrome.py/.bat  # Mở Chrome ở cổng 9222
+├── start_app.bat              # Khởi động app + mở trình duyệt
+├── requirements.txt
+│
+├── ui/                        # Giao diện Fluent Design (PySide6)
+│   ├── main_window.py         # Cửa sổ chính
+│   ├── crawler_view.py        # Trang quét
+│   ├── settings_view.py       # Trang cài đặt
+│   ├── log_view.py            # Widget nhật ký
+│   ├── worker.py              # QThread chạy engine
+│   └── theme.py               # Theme, widget tùy chỉnh
+│
+├── tests/                     # Unit tests (295 test)
+├── probes/                    # Script kiểm chứng đầu-cuối
+├── tools/                     # Công cụ phụ trợ
+└── assets/                    # Screenshot, tài nguyên
 ```
-
-Ranh giới tầng: `gui_fluent.py` và `v72.py` chỉ lo giao diện, `engine.py` lo điều phối, `downloader.py` lo tải file, `xenforo_parse.py` và `xf_selectors.py` là hàm thuần. Nhờ vậy phần bóc DOM test được không cần mạng.
-
-## Luồng hoạt động
-
-```
-Bấm nút
-  -> run_async_engine tạo event loop mới trong thread riêng
-  -> CrawlerEngine.connect: thử cổng 9222, tự mở trình duyệt nếu chưa có
-  -> duyệt box, thu thập link thread (có visited-set chống lặp vô hạn)
-  -> mỗi thread: tab Playwright, chờ render, bóc DOM
-  -> xenforo_parse tách ảnh / video / file, loại bỏ smilie, avatar, quảng cáo
-  -> downloader tải song song, cache tra trước khi tải
-  -> ghi log theo dấu [-] [!] [✓] [+] [•] [*]
-```
-
-Có semaphore ở bốn tầng: 5 tab, 10 request tải, 2 thread cho một user, 2 user song song. Số này chỉnh trong `config.py`.
 
 ## Cấu hình
 
 Toàn bộ tham số nằm trong `config.py`:
 
 | Biến | Mặc định | Ý nghĩa |
-| --- | --- | --- |
-| `DOWNLOAD_DIR` | `E:\HIDE\RPHANG` | Thư mục gốc. Ghi đè bằng biến môi trường `RPHANG_DIR` |
-| `CDP_PORT` | `9222` | Cổng debug của trình duyệt |
-| `AUTO_LAUNCH_BROWSER` | `True` | Tự mở trình duyệt khi khởi động |
-| `BROWSER_PROFILE` | `v72_crawl` | Tên profile riêng, không đụng phiên đang dùng |
-| `TAB_SEM` | `5` | Số tab Playwright mở đồng thời |
+|---|---|---|
+| `DOWNLOAD_DIR` | `E:\HIDE\RPHANG` | Thư mục gốc. Ghi đè bằng `RPHANG_DIR` |
+| `BROWSER_MODE` | `cdp` | `cdp` (cổng 9222) hoặc `persistent` (tự mở) |
+| `USE_REAL_PROFILE` | `True` | Dùng profile thật của trình duyệt (có sẵn cookie) |
+| `CDP_PORT` | `9222` | Cổng debug CDP |
+| `BLOCK_IMAGES` | `True` | Chặn ảnh/font ở tầng mạng (giảm RAM) |
+| `TAB_SEM` | `5` | Số tab Playwright đồng thời |
 | `DOWNLOAD_SEM` | `10` | Số request tải đồng thời |
-| `THREAD_SEM` | `2` | Số thread của một user bóc đồng thời |
-| `USER_SEM` | `2` | Số user xử lý đồng thời |
-| `PENDING_LIMIT` | `80` | Số task tải được phép tồn tại cùng lúc trong một thread |
-| `MAX_FILE_MB` | `512` | Trần kích thước một tệp. `0` = không giới hạn |
-| `SETTLE_MS` | `0` | Thời gian chờ thêm sau khi trang render |
-| `MAX_RETRIES` | `3` | Số lần thử lại khi mở trang |
-| `DOWNLOAD_TIMEOUT_MS` | `40000` | Timeout tải một file |
-| `NAV_TIMEOUT_MS` | `45000` | Timeout điều hướng trang |
-| `STOP_TIMEOUT_MS` | `2000` | Timeout rút ngắn khi đang dừng |
-| `BOX_PRESETS` | 6 URL mẫu | Danh sách gợi ý trong dropdown |
-
-Bốn biến semaphore được kẹp sàn `>= 1` lúc nạp config: `Semaphore(0)` là khoá
-chết ngay từ đầu, còn giá trị âm thì asyncio ném `ValueError`.
-
-Về `MAX_FILE_MB`: Playwright 1.54 **không có API streaming** cho
-`context.request` — `body()` nạp toàn bộ payload vào RAM. Vì vậy trần này được
-kiểm bằng `content-length` **trước khi** gọi `body()`. Nếu server không gửi
-`content-length` (chunked encoding) thì file vẫn phải tải trọn, nên trần không
-áp dụng được trong trường hợp đó.
-
-Về `SETTLE_MS`: XenForo render server-side, đo thực tế `settle=0` vẫn ra đủ 20 post. Tăng lên nếu bạn thấy thiếu bài, hoặc bọc thêm `wait_for_selector` khi mạng chậm.
-
-## Phím tắt
-
-| Phím | Việc |
-| --- | --- |
-| `Ctrl+Enter` | Chạy nút tương ứng với ô đang có con trỏ |
-| `Esc` | Dừng khẩn cấp |
-| `Ctrl+F` | Nhảy vào ô lọc nhật ký |
-| `Ctrl+L` | Xóa nhật ký |
-
-## Giao diện
-
-Hai bảng màu, cùng hue hổ phách:
-
-- **Sáng** (`light`) — nền kem, thẻ trắng, nút vàng chữ tối.
-- **Tối ấm** (`warm`) — nền nâu tối, thẻ nâu sẫm, nút vàng chữ sáng.
-
-Mọi cặp chữ trên nền đều đạt WCAG 2.2 AA, kiểm tự động bằng:
-
-```bash
-python _check_palette.py
-```
-
-Lựa chọn được lưu ở `~/.xenforo_theme`, nên mở lại app vẫn giữ bảng màu đã chọn.
-
-## Tốc độ
-
-App tải HTML bằng HTTP thuần trước, chỉ rơi về trình duyệt khi HTTP thất bại.
-Đo trên rphang.show (8 trang box):
-
-| Cách | Thời gian | Tốc độ |
-|---|---|---|
-| HTTP thuần, 8 luồng | 0,56s | **14,2 trang/giây** |
-| Trình duyệt, 8 song song | 0,69s | 11,6 trang/giây |
-| Trình duyệt, tuần tự | 3,59s | 2,2 trang/giây |
-
-HTTP không tốn RAM render (~55 MB/tab). Với 1.336 trang của hai box, HTTP
-8 luồng mất khoảng 95 giây.
-
-### Phiên đăng nhập được dùng lại
-
-Cookie lấy **trực tiếp từ trình duyệt đang mở** qua CDP, rồi gắn vào request
-HTTP. Không đọc file Cookies: khi Chromium đang chạy nó giữ khoá độc quyền trên
-đúng file đó (đo được: chỉ `Cookies` bị khoá, `Preferences`/`History` vẫn đọc
-được).
-
-### Chỉ quét bài mới
-
-`STOP_ON_KNOWN_THREAD = True`: dừng đọc trang box khi **cả trang** đều là bài
-đã có trong SQLite. Bài mới luôn nằm ở trang đầu, nên lần chạy sau chỉ đọc vài
-trang thay vì 989.
-
-Khoá nhận diện là **id số** của thread (`/t/<slug>.<id>/`), không phải slug —
-slug đổi khi chủ bài sửa tiêu đề, id thì không.
-
-```python
-STOP_ON_KNOWN_THREAD = True
-BOX_MAX_PAGES = 0       # 0 = không giới hạn; đặt 20 nếu muốn giới hạn
-HTTP_WORKERS = 12       # 8-16 là vùng an toàn đã đo
-```
-
-### Tải media bằng streaming
-
-`context.request` + `response.body()` của Playwright nạp **toàn bộ file vào RAM**
-trước khi ghi. Đo trên một thread thật: 39 ảnh + 56 video ≈ 580 MB; với
-`DOWNLOAD_SEM=10` có thể có 10 file cùng trong RAM.
-
-Đã đổi sang HTTP streaming 64 KB. Đo trên 5 file thật (133 MB):
-
-| Cách | Thời gian | RAM tăng |
-|---|---|---|
-| `body()` nạp cả file | 6,56s | **+80 MB** |
-| Streaming 64 KB | **6,39s** | **+0 MB** |
-
-Tốc độ nhanh hơn 3% và RAM không tăng. Ghi ra `.tmp` rồi `os.replace` nên
-không bao giờ để lại file cụt mang tên thật.
-
-### Quảng cáo được lọc
-
-rphang.show dùng add-on SAM chèn quảng cáo **bên trong** `message-body`. Đo trên
-một thread: 9 khối `samCodeUnit`/`samItem`. Đã gộp vào `_strip_junk` — kiểm
-chứng: 9 khối bị gỡ, 39 ảnh + 56 video thật giữ nguyên.
-
-## Nhật ký và debug
-
-Mỗi phiên ghi một file riêng: `<thư mục tải>/logs/session-YYYYMMDD-HHMMSS.log`.
-Ghi ngay sau từng dòng (flush) nên app bị kill vẫn còn log tới dòng cuối.
-
-Đọc lại phiên gần nhất:
-
-```
-python check_log.py                 # tóm tắt + lỗi
-python check_log.py --all           # liệt kê mọi phiên
-python check_log.py --tail 80       # 80 dòng cuối
-python check_log.py --level ERROR   # chỉ lỗi
-```
-
-Mỗi dòng có mức (DEBUG/INFO/WARN/ERROR), thời gian và tag:
-
-```
-16:33:37.773 INFO  [system  ] [*] Bắt đầu quét
-16:33:37.773 ERROR [-] [-] Lỗi tải tệp: timeout
-16:33:37.773 WARN  [-] [!] Bỏ qua 3 tệp
-```
-
-Phân loại tự động dựa trên nội dung, không chỉ tag — vì engine log
-`log("[-] Lỗi ...")` mà không truyền tag, nên nếu chỉ dựa tag thì những lỗi
-quan trọng nhất sẽ bị xếp vào INFO và bị lọc mất.
-
-Cấu hình trong `config.py`:
-
-```python
-LOG_DIR = os.path.join(DOWNLOAD_DIR, "logs")
-LOG_KEEP_SESSIONS = 30      # giữ 30 phiên gần nhất
-LOG_MIN_LEVEL = "DEBUG"     # DEBUG | INFO | WARN | ERROR
-LOG_TO_FILE = True
-```
+| `HTTP_WORKERS` | `12` | Số luồng HTTP-first |
+| `MAX_FILE_MB` | `512` | Trần kích thước tệp (0 = không giới hạn) |
+| `DOMAIN_OVERRIDE` | `""` | Domain thay thế (đặt qua GUI hoặc `V72_DOMAIN`) |
 
 ## Kiểm thử
 
 ```bash
-python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent test_review_round2
+python -m unittest test_v72 test_review_fixes test_persistent_mode test_first_login test_gui_fluent test_review_round2 test_review_round3 test_critical_fixes test_log_improvements
 ```
 
-**243 test**, chạy khoảng 35 giây:
+**295 test**, chạy khoảng 30 giây.
 
-| File | Số test | Phạm vi |
-|---|---|---|
-| `test_v72.py` | 154 | Core: bóc DOM, downloader, cache, engine |
-| `test_review_fixes.py` | 21 | Hồi quy cho các lỗi tìm thấy trong đợt review |
-| `test_persistent_mode.py` | 27 | Chế độ persistent, profile, session |
-| `test_first_login.py` | 18 | Đăng nhập lần đầu, giới hạn bộ nhớ, chọn trình duyệt |
-| `test_review_round2.py` | 15 | Hồi quy: cookie header, signal vs QTimer, log file |
-| `test_gui_fluent.py` | 8 | Giao diện Qt |
-
-Phần lớn không cần mạng và không mở trình duyệt thật. Ba script kiểm chứng
-đầu-cuối chạy tay (có mạng):
+Kiểm tra tĩnh:
 
 ```bash
-python probe_cdp.py              # 13/13 — kiểm soát cổng CDP
-python probe_persistent_mode.py  # 8/8   — mode persistent với trình duyệt thật
-python probe_no_port.py          # 7/7   — app không mở cổng ở mode persistent
-python probe_image_block.py      # 5/5   — chặn ảnh không phá parser
-python probe_log_leak.py         # 3/3   — nhật ký không phình vô hạn
-python probe_cdp_mode.py         # 6/6   — mode cdp đầu-cuối với Chrome thật
-python probe_http_first.py       # 12/12 — tải HTTP nhanh + lọc quảng cáo
-python probe_stop_early.py       # 6/6   — dừng sớm khi gặp bài cũ
-python probe_stream_gain.py      # đo RAM tiết kiệm khi stream
-python probe_session_errors.py   # rà lỗi trong một phiên thật
-python probe_log_font.py         # đo chiều cao dòng log
-python probe_speed.py            # đo tốc độ thật
-python probe_speed_browser.py    # so sánh HTTP vs trình duyệt
-python probe_memory.py           # đo RAM thực tế
-python audit_repro.py            # 4/4   — các lỗi P0 đã sửa
-```
-
-Test **hermetic**: `setUpModule` trỏ `config.DOWNLOAD_DIR` và biến
-`RPHANG_DIR` về thư mục tạm, nên suite không mở và không ghi
-`crawler_cache.db` của thư viện thật. Nhờ vậy chạy được trên máy CI không
-có ổ `E:`.
-
-Test tương phản màu nằm trong test suite, duyệt cả hai bảng màu. Chạy thêm self-check độc lập:
-
-```bash
-python _check_palette.py
+python -m pyflakes *.py ui/*.py
 ```
 
 ## Xử lý sự cố
 
-**"Lỗi: Thất bại khi kết nối CDP cổng 9222!"**
+### "browser.exe thoát ngay sau khi mở (mã 0)"
 
-Trình duyệt chưa mở ở chế độ debug. Kiểm tra:
+Cốc Cốc đang chạy nhưng không có cổng debug 9222. Giải pháp:
+- Đóng hết Cốc Cốc rồi chạy `start_app.bat`
+- Hoặc chạy `open_debug_chrome.py` trước
 
+### "Cổng 9222 bị tiến trình khác chiếm"
+
+Một tiến trình khác đang giữ cổng 9222. Đổi `CDP_PORT` trong `config.py` hoặc tắt tiến trình đó.
+
+### Đổi theme xong mở lại vẫn ra theme cũ
+
+Xóa file theme rồi chọn lại:
 ```bash
-curl http://localhost:9222/json/version
+del "%USERPROFILE%\.xenforo_theme"
+del .xenforo_theme
 ```
 
-Không phản hồi thì trình duyệt chưa chạy với cờ đúng. Nếu bản Chrome >= 136, cần profile riêng:
+### File tải về bị lỗi 403/404
 
-```bash
-chrome.exe --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\V72Crawler\v72_crawl"
-```
-
-**Ảnh tải về bị lưu thành file rác (mở ra là HTML)**
-
-Cloudflare hoặc 404 trả về HTML thay vì ảnh. `selectors.py` lọc các content-type này, nhưng nếu server trả 200 kèm HTML thì lọt lưới. Xóa file rác trong thư mục tải và chạy lại.
-
-**Cùng một ảnh bị tải lại nhiều lần**
-
-Cache lưu đường dẫn tuyệt đối. Nếu bạn di chuyển thư mục gốc, cache cũ trỏ tới đường dẫn không còn tồn tại và app tải lại. Xóa `crawler_cache.db` trong thư mục gốc để bắt đầu lại.
-
-**Nút Dừng không ăn**
-
-`STOP_TIMEOUT_MS` rút timeout tải xuống 2 giây, nhưng một request đã vào giữa chừng vẫn sống tới `DOWNLOAD_TIMEOUT_MS`. Hạ `DOWNLOAD_TIMEOUT_MS` nếu bạn muốn dừng gọn hơn.
-
-**Cốc Cốc mở ra nhưng không có cổng 9222**
-
-Khi Cốc Cốc đã chạy, nó bỏ qua cờ debug và chỉ mở tab. Đóng hẳn trình duyệt rồi mở lại app.
+- **403**: verify token hết hạn hoặc server chặn. Thử đổi domain (ô Domain → Áp dụng)
+- **404**: file đã bị xóa khỏi server. Không thể khắc phục.
 
 ## Giới hạn đã biết
 
-- Chỉ chạy được trên Windows. Phần bật thanh tiêu đề tối dùng `ctypes` và `dwmapi`.
-- Số liệu thống kê trên góc phải được đọc từ chuỗi log mà engine in ra, không phải từ bộ đếm riêng. Sửa câu chữ trong `engine.py` thì số liệu sẽ không cập nhật, trạng thái vẫn đúng. Ngoài ra con số này là **giá trị của thread gần nhất**, không phải tổng tích luỹ của cả phiên.
-- **Không tải theo luồng (streaming).** Playwright 1.54 không có API stream cho `context.request`; `body()` nạp trọn payload vào RAM. `MAX_FILE_MB` chặn được file lớn *khi server gửi `content-length`*; server dùng chunked encoding thì vẫn tải trọn. Muốn xử lý triệt để phải đổi sang HTTP client riêng và tự quản lý cookie phiên.
-- Media chỉ lấy từ nội dung bài viết. Ảnh trong avatar, chữ ký cuối bài và thanh cảm xúc bị loại có chủ đích.
-- Một thread nhiều trang được app bấm "Trang sau" để lấy hết, nhưng mỗi trang phải render xong mới sang trang kế tiếp nên thread dài sẽ chậm.
-- `xenforo_parse.extract_post_media()` **sửa** cây soup truyền vào (gỡ quote/quảng cáo bằng `decompose()`). Cần bản không sửa input thì dùng `extract_post_media_copy()`.
-- Folder của một bài được đặt theo ngày mở thread. Nếu server không trả ngày ở bất kỳ nguồn nào, folder dùng nhãn `[khong-ngay]` — **ổn định giữa các lần quét**, không đổi tên. Ngày đã biết được lưu trong bảng `thread_index` của SQLite và dùng lại cho các lần sau.
-
-## Phạm vi quét
-
-Khi quét theo tác giả, app chỉ mở **thread của đúng tác giả đó**. Bộ lọc được giữ
-qua mọi trang: XenForo trả link phân trang trần (không mang `?starter=`), nên app
-tự gắn lại query string của trang hiện tại. Nếu không, từ trang 2 trở đi box sẽ
-hiện toàn bộ thread của mọi người — đó là lỗi cũ làm app mở cả nghìn bài.
-
-Tác giả được đọc từ `data-author` **trên item của trang danh sách**, nên lọc xảy
-ra trước khi mở thread. Nhật ký nói rõ:
-
-```
-[+] TRAICUBE: 3 thread trong 5 trang (97 bài người khác đã bỏ qua).
-```
-
-## Quét lại một bài đã có
-
-Dán link và bấm **Quét 1 Thớt** — kể cả khi bài đã tải trước đó, app **luôn chạy đầy đủ**: duyệt hết các trang, đọc hết comment của chủ thớt, đếm media, rồi mới quyết định tải gì. Nó không lướt qua dựa trên việc "đã có trong SQLite".
-
-Nhật ký luôn nói rõ đã làm gì:
-
-```
-[✓] TACGIA: Bài 1 tải mới 2 ảnh [6 bài của chủ thớt, 1 bài người khác bỏ qua, 1 trang]
-[•] TACGIA: Bài 1 đã có đủ 7 media, trên đĩa có 7 tệp [...] — không cần tải lại.
-[!] Đĩa chỉ có 3/7 tệp. Có thể file đã bị xoá hoặc di chuyển; chạy lại để tải bù.
-[!] Trong folder có 9 tệp nhưng bài chỉ có 7 media — có thể còn bản sao từ lần quét trước.
-```
-
-Hai dòng cảnh báo cuối là điểm khác biệt so với bản cũ: trước đây nếu cache nói "đã có" thì app im lặng bỏ qua, kể cả khi file trên đĩa đã bị xoá.
+- Chỉ chạy trên Windows
+- Streaming chỉ có ở đường HTTP; đường Playwright fallback nạp trọn payload vào RAM
+- Media chỉ lấy từ nội dung bài viết (không avatar, chữ ký, emoji)
+- Thread nhiều trang phải render từng trang nên chậm với bài dài

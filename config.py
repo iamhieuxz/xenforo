@@ -79,18 +79,15 @@ SESSION_BROWSER = BROWSER
 USE_REAL_PROFILE = os.environ.get("V72_USE_REAL_PROFILE", "1") not in ("0", "false", "False")
 
 # ---------- Cách điều khiển trình duyệt ----------
-# "cdp" — nối vào cổng debug của Chrome ĐANG CHẠY (mặc định).
-#   Bạn mở Chrome như bình thường, đăng nhập, rồi app bám vào chính cửa sổ đó.
-#   App KHÔNG mở thêm cửa sổ nào, KHÔNG tạo profile mới.
-#   Nhược điểm đã đo: một tiến trình lạ chiếm cổng làm app tưởng Chromium sẵn
-#   sàng; "localhost" resolve ra ::1 trước 127.0.0.1 nên request có thể bị
-#   refuse; xung đột với công cụ khác cũng muốn cổng 9222. App đã có
-#   probe_port() phân biệt ba trạng thái để báo rõ từng trường hợp.
+# "persistent" (mặc định) — Playwright tự mở trình duyệt, KHÔNG cần cổng TCP.
+#   Chạy `python app.py` là xong, không cần start_app.bat hay cổng 9222.
+#   Khi USE_REAL_PROFILE = True (mặc định): dùng profile thật của Cốc Cốc →
+#   có sẵn cookie đăng nhập. ĐIỀU KIỆN: phải đóng hết Cốc Cốc trước khi chạy app.
+#   Khi USE_REAL_PROFILE = False: dùng profile riêng (trắng, đăng nhập 1 lần đầu).
 #
-# "persistent" — Playwright tự mở trình duyệt với profile riêng của app.
-#   Không cần cổng TCP. Nhưng đây là profile MỚI: trắng trơn, không có cookie,
-#   không có extension, không có bookmark -> phải đăng nhập lại từ đầu. Đó là
-#   lý do đổi mặc định về "cdp".
+# "cdp" — nối vào cổng debug 9222 của Chrome/Cốc Cốc ĐANG CHẠY (dự phòng).
+#   Cần start_app.bat hoặc tự mở trình duyệt ở cổng 9222 trước.
+#   Dùng khi không thể đóng trình duyệt để dùng persistent + real profile.
 #
 # Đổi bằng biến môi trường V72_BROWSER_MODE nếu muốn thử cả hai.
 BROWSER_MODE = os.environ.get("V72_BROWSER_MODE", "cdp")
@@ -199,10 +196,14 @@ MAX_FILE_MB = 512
 BOX_PRESETS = [
     "https://rphang.show/box/clip-sex-phim-sex.86/",
     "https://rphang.show/box/nhat-ky-may-mua.140/",
-    "https://rphang.beer/box/clip-sex-phim-sex.86/",
-    "https://rphang.beer/box/nhat-ky-may-mua.140/",
-    "https://rphang.kim/box/nhat-ky-may-mua.140/",
-    "https://rphang.beer/box/thap-cam-box.6/",
-    "https://rphang.beer/box/thap-cam-mien-bac.99/",
-    "https://rphang.beer/box/some-swing-yoni-mien-bac.116/",
+    "https://rphang.show/box/thap-cam-box.6/",
+    "https://rphang.show/box/thap-cam-mien-bac.99/",
+    "https://rphang.show/box/some-swing-yoni-mien-bac.116/",
+    "https://rphang.show/box/some-swing-yoni-mien-trung.117/",
+    "https://rphang.show/box/some-swing-yoni-mien-nam.115/",
 ]
+
+# Domain mặc định để thay thế nhanh khi forum đổi domain.
+# Khi user nhập domain mới trong GUI, mọi URL trong BOX_PRESETS và ô nhập
+# sẽ tự động thay host cũ bằng host mới. Rỗng = không thay gì.
+DOMAIN_OVERRIDE = os.environ.get("V72_DOMAIN", "")

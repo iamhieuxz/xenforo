@@ -273,7 +273,7 @@ def main():
         print("=" * 78)
         print("DRY-RUN — KHÔNG CÓ FILE NÀO BỊ XOÁ")
         print("=" * 78)
-        print(f"  Nếu muốn xoá thật, chạy lại với --apply")
+        print("  Nếu muốn xoá thật, chạy lại với --apply")
         print(f"  Sẽ thu hồi: {fmt_size(total_bytes)}")
         return 0
 

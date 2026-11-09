@@ -75,7 +75,16 @@ def backoff_seconds(attempt, base=2.0, cap=30.0):
 
 
 def url_hash(url):
-    return hashlib.md5(url.split('?')[0].split('#')[0].encode('utf-8')).hexdigest()
+    """Hash URL. Giữ query cho route proxy/attachment vì query là định danh."""
+    # Xoá fragment
+    path_and_query = url.split('#')[0]
+    # Để nguyên query nếu chứa proxy.php hoặc attachments (chứ không cắt query)
+    if 'proxy.php' in path_and_query or 'attachments' in path_and_query:
+        # Giữ toàn bộ URL với query
+        return hashlib.md5(path_and_query.encode('utf-8')).hexdigest()
+    else:
+        # Các URL khác, xoá query vì path đủ phân biệt
+        return hashlib.md5(path_and_query.split('?')[0].encode('utf-8')).hexdigest()
 
 
 def count_files(stats):
@@ -347,6 +356,11 @@ class Downloader:
 
             if res.error == "cancelled":
                 return "CANCELLED"
+            if res.error and "scheme không hỗ trợ" in res.error:
+                # URL rác bóc từ HTML ngoài (file://, ftp://...): thử lại cũng
+                # y như vậy — dừng ngay, đỡ ngủ backoff 3 lần cho mỗi URL.
+                self.log(f"   [!] {res.error}: {url[:60]}")
+                return "FAILED"
             if res.error and "quá lớn" in res.error:
                 self.log(f"   [!] {res.error}: {url[:60]}")
                 return "FAILED"
@@ -361,6 +375,7 @@ class Downloader:
                 await asyncio.sleep(backoff_seconds(attempt, base=1.0))
 
         if not wrote_ok:
+            self.log(f"   [!] Tải thất bại (HTTP streaming): {url[:80]}")
             return "FAILED"
 
         # ---- Khử trùng lặp theo NỘI DUNG ----
@@ -446,6 +461,20 @@ class Downloader:
                     if not body:
                         return "FAILED"
 
+                    # Lưới cuối cho trần kích thước: _too_big() chỉ chặn được
+                    # khi server khai báo content-length. Server dùng chunked
+                    # (không header) thì tới đây body() đã nạp trọn file vào
+                    # RAM — không tránh được với Playwright 1.54 (xem ghi chú
+                    # MAX_FILE_MB trong config.py) — nhưng ít nhất KHÔNG ghi
+                    # file vượt trần xuống đĩa: không có check này, một response
+                    # chunked 2 GB vẫn được lưu đủ dù MAX_FILE_MB=512.
+                    limit = getattr(config, "MAX_FILE_MB", 0) * 1024 * 1024
+                    if limit and len(body) > limit:
+                        self.log(f"   [!] Bỏ qua tệp > {config.MAX_FILE_MB}MB "
+                                 f"({len(body) // (1024 * 1024)}MB tải về): "
+                                 f"{url[:60]}")
+                        return "FAILED"
+
                     declared = self._content_length(response)
                     if declared is not None and declared != len(body):
                         self.log(f"   [!] Nhận thiếu dữ liệu ({len(body)}/{declared} byte), "
@@ -481,6 +510,7 @@ class Downloader:
                         await response.dispose()
                     except Exception:
                         pass
+        self.log(f"   [!] Tải thất bại (browser fallback): {url[:80]}")
         return "FAILED"
 
     @staticmethod

@@ -1,20 +1,20 @@
 """Cửa sổ chính + main(). Tách từ gui_fluent.py (P2.1)."""
 
-import asyncio
 import os
-import re
-import subprocess
 import sys
 import threading
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QColor, QPainter, QPen
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QStackedWidget
 
 from qfluentwidgets import (
-    MSFluentWindow, FluentIcon, NavigationItemPosition,
+    FluentIcon, NavigationItemPosition,
     InfoBar, InfoBarPosition, Theme, setTheme,
 )
+from qfluentwidgets.common.config import qconfig
+from qframelesswindow import FramelessWindow
 
 import config
 import browser_launcher
@@ -26,8 +26,15 @@ from ui.log_view import swallow
 from ui.worker import CrawlWorker
 from ui.crawler_view import CrawlerInterface
 from ui.settings_view import SettingsInterface
-class MainWindow(MSFluentWindow):
-    """Cửa sổ chính của ứng dụng với thiết kế Fluent Design chuẩn Windows 11."""
+from ui.startup_overlay import StartupOverlay
+from ui.theme import (
+    MacSidebar, MacTitleBar, apply_macos_typography, apply_accent_color,
+    apply_widget_styles, palette,
+)
+
+
+class MainWindow(FramelessWindow):
+    """Cửa sổ chính phong cách macOS: sidebar, traffic-light, card nổi."""
 
     # Signal để worker thread báo về GUI thread. PHẢI dùng Signal, không dùng
     # QTimer.singleShot: QTimer tạo trong thread không có Qt event loop thì
@@ -40,12 +47,38 @@ class MainWindow(MSFluentWindow):
     sig_ui_notify = Signal(str, str, str, int)   # (kind, title, content, ms)
     sig_ui_login_opened = Signal(str, str, bool)  # (browser, profile, wait)
     sig_ui_log = Signal(str, str)                 # (message, tag)
+    sig_startup_status = Signal(str, str, int)    # (state, detail, percent)
 
     def __init__(self, auto_browser: bool = True):
+        # Font + accent phải đặt trước khi tạo widget: QSS của qfluentwidgets
+        # đọc fontFamilies lúc apply.
+        apply_macos_typography()
+        apply_accent_color()
         super().__init__()
-        self.setWindowTitle("XenForo Crawler — V72 Fluent")
-        self.resize(1100, 850)
-        self.setMinimumSize(850, 720)
+        self.setWindowTitle("XenForo Download")
+        self.resize(1180, 880)
+        self.setMinimumSize(960, 740)
+
+        # Theme PHẢI đặt trước khi tạo widget. Đo được: nếu đặt sau, QSS phủ
+        # lên cây widget đang ẩn không repolish hết — khởi động thẳng vào dark
+        # thì tiêu đề sidebar kẹt màu light (#1D1D1F), gần như vô hình.
+        saved_theme = self.load_theme_setting()
+        if saved_theme == "light":
+            setTheme(Theme.LIGHT)
+        elif saved_theme == "auto":
+            setTheme(Theme.AUTO)
+        else:
+            setTheme(Theme.DARK)
+
+        self.setTitleBar(MacTitleBar(self))
+        self._build_shell()
+
+        # Thiết lập Icon thương hiệu ứng dụng
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "app_icon.ico")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo_256.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.download_dir = config.DOWNLOAD_DIR
         self._resolve_dir()
@@ -77,15 +110,6 @@ class MainWindow(MSFluentWindow):
             except Exception:
                 self.session_log = None
 
-        # Thiết lập theme ban đầu
-        saved_theme = self.load_theme_setting()
-        if saved_theme == "light":
-            setTheme(Theme.LIGHT)
-        elif saved_theme == "auto":
-            setTheme(Theme.AUTO)
-        else:
-            setTheme(Theme.DARK)
-
         # Khởi tạo giao diện trang con
         self.crawler_interface = CrawlerInterface(self)
         self.crawler_interface.setObjectName("crawlerInterface")
@@ -93,16 +117,89 @@ class MainWindow(MSFluentWindow):
         self.settings_interface.setObjectName("settingsInterface")
 
         self.init_navigation()
+        # QSS macOS cho toàn bộ control đã tạo xong (nút, ô nhập, combo...).
+        apply_widget_styles(self)
 
         # Nối signal -> handler. Qt tự chọn QueuedConnection vì phát từ thread
         # khác, nên handler luôn chạy trên GUI thread.
         self.sig_ui_notify.connect(self._on_ui_notify)
         self.sig_ui_login_opened.connect(self._on_login_opened_ui)
         self.sig_ui_log.connect(self.append_log)
+        self.sig_startup_status.connect(self._on_startup_status)
+        qconfig.themeChangedFinished.connect(self._on_theme_changed)
+
+        # Màn hình chờ: chỉ dùng cho chế độ CDP (chế độ persistent không mở
+        # trình duyệt lúc khởi động nên không có gì để chờ).
+        self.startup_overlay: Optional[StartupOverlay] = None
+        self._startup_pending = False
+        self._startup_grace = QTimer(self)
+        self._startup_grace.setSingleShot(True)
+        self._startup_grace.timeout.connect(self._show_startup_overlay)
 
         # Tự động nạp trình duyệt nếu cấu hình bật
         if auto_browser and config.AUTO_LAUNCH_BROWSER:
-            QTimer.singleShot(500, self.auto_launch_browser)
+            QTimer.singleShot(350, self._begin_startup)
+
+    def _build_shell(self):
+        """Dựng khung macOS: sidebar trái + vùng nội dung xếp lớp."""
+        self.sidebar = MacSidebar(self)
+        self.stackedWidget = QStackedWidget(self)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, MacTitleBar.HEIGHT, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self.sidebar)
+        root.addWidget(self.stackedWidget, 1)
+        self.sidebar.currentChanged.connect(self._on_nav_changed)
+
+    def addSubInterface(self, interface, icon, text, selectedIcon=None,
+                        position=NavigationItemPosition.TOP, **kwargs):
+        """Tương thích MSFluentWindow: thêm trang + mục sidebar."""
+        self.stackedWidget.addWidget(interface)
+        return self.sidebar.addItem(
+            interface.objectName(), icon, text,
+            bottom=(position == NavigationItemPosition.BOTTOM))
+
+    def switchTo(self, interface):
+        if self.stackedWidget.indexOf(interface) < 0:
+            return
+        self.stackedWidget.setCurrentWidget(interface)
+        self.sidebar.setCurrent(interface.objectName())
+
+    def _on_nav_changed(self, key: str):
+        for i in range(self.stackedWidget.count()):
+            widget = self.stackedWidget.widget(i)
+            if widget.objectName() == key:
+                self.stackedWidget.setCurrentWidget(widget)
+                return
+
+    def resizeEvent(self, event):
+        if getattr(self, "titleBar", None) is not None:
+            self.titleBar.setGeometry(0, 0, self.width(), MacTitleBar.HEIGHT)
+        self._position_overlay()
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        pal = palette()
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(pal["canvas"]))
+        # Sidebar chạy sát đỉnh sau title bar, giống macOS Finder: dải trên
+        # bên trái cùng màu sidebar, có đường phân cách dọc.
+        if getattr(self, "sidebar", None) is not None:
+            top = QRect(0, 0, MacSidebar.WIDTH, MacTitleBar.HEIGHT)
+            painter.fillRect(top, QColor(pal["sidebar"]))
+            painter.setPen(QPen(QColor(pal["sidebar_border"]), 1))
+            painter.drawLine(
+                MacSidebar.WIDTH - 1, 0,
+                MacSidebar.WIDTH - 1, MacTitleBar.HEIGHT)
+
+    def _on_theme_changed(self):
+        self.update()
+        if getattr(self, "sidebar", None) is not None:
+            self.sidebar.update()
+        if getattr(self, "titleBar", None) is not None:
+            self.titleBar.update()
+        if getattr(self, "startup_overlay", None) is not None:
+            self.startup_overlay.update()
 
     def init_navigation(self):
         self.addSubInterface(
@@ -117,6 +214,7 @@ class MainWindow(MSFluentWindow):
             "Cài đặt",
             position=NavigationItemPosition.BOTTOM
         )
+        self.switchTo(self.crawler_interface)
 
     def is_crawling(self) -> bool:
         return self.worker is not None and self.worker.isRunning()
@@ -179,6 +277,84 @@ class MainWindow(MSFluentWindow):
         self.crawler_interface.refresh_user_dropdown()
         return True
 
+    def _begin_startup(self):
+        """Khởi động trình duyệt kèm màn hình chờ nếu cần chờ thật."""
+        mode = (getattr(config, "BROWSER_MODE", "cdp") or "cdp").lower()
+        if mode != "cdp" or not config.AUTO_LAUNCH_BROWSER:
+            self.auto_launch_browser()
+            return
+
+        self._startup_pending = True
+        # Cổng đã sẵn sàng thì launch() trả về gần như tức thì; chờ 250ms rồi
+        # mới phủ màn hình để trường hợp bình thường không bị nháy overlay.
+        self._startup_grace.start(250)
+        self.auto_launch_browser()
+
+    def _show_startup_overlay(self):
+        if not self._startup_pending:
+            return
+        if self.startup_overlay is None:
+            self.startup_overlay = StartupOverlay(self)
+            self.startup_overlay.dismissed.connect(self._on_startup_dismissed)
+            self.startup_overlay.closed.connect(self._on_startup_closed)
+        self._position_overlay()
+        self._set_content_enabled(False)
+        self.startup_overlay.start()
+        self.startup_overlay.show()
+        self.startup_overlay.raise_()
+
+    def _position_overlay(self):
+        overlay = getattr(self, "startup_overlay", None)
+        if overlay is None:
+            return
+        overlay.setGeometry(
+            0, MacTitleBar.HEIGHT, self.width(),
+            max(0, self.height() - MacTitleBar.HEIGHT))
+
+    def _set_content_enabled(self, enabled: bool):
+        for widget in (getattr(self, "sidebar", None),
+                       getattr(self, "stackedWidget", None)):
+            if widget is not None:
+                widget.setEnabled(enabled)
+
+    def _on_startup_status(self, state: str, detail: str, percent: int):
+        if state == "progress":
+            if self._startup_pending and self.startup_overlay is not None:
+                self.startup_overlay.set_progress(percent, detail)
+            return
+
+        if state == "error":
+            self._startup_grace.stop()
+            if self.startup_overlay is not None and self.startup_overlay.isVisible():
+                self._startup_pending = False
+                self.startup_overlay.finish_error(detail)
+                return
+            # Lỗi có thể tới trước khi overlay kịp hiện (250ms) — vẫn phải
+            # báo, vì ở chế độ CDP app chưa dùng được khi thiếu trình duyệt.
+            # Nhưng người dùng đã bấm "Bỏ qua" thì tôn trọng, chỉ ghi log.
+            if self._startup_pending:
+                self._show_startup_overlay()
+                self._startup_pending = False
+                if self.startup_overlay is not None:
+                    self.startup_overlay.finish_error(detail)
+            return
+
+        self._startup_pending = False
+        self._startup_grace.stop()
+        if self.startup_overlay is not None and self.startup_overlay.isVisible():
+            self.startup_overlay.finish_success(detail)
+
+    def _on_startup_dismissed(self):
+        was_skipped = self._startup_pending
+        self._startup_pending = False
+        self._startup_grace.stop()
+        if was_skipped:
+            self.append_log("[*] Bạn đã bỏ qua màn hình khởi động. Trình duyệt "
+                            "vẫn tiếp tục mở ngầm.", "system")
+
+    def _on_startup_closed(self):
+        self._set_content_enabled(True)
+
     def auto_launch_browser(self):
         """Chuẩn bị trình duyệt lúc khởi động — theo đúng BROWSER_MODE.
 
@@ -211,25 +387,32 @@ class MainWindow(MSFluentWindow):
                             "khi bắt đầu quét.", "system")
             return
 
-        # mode == "cdp": giữ nguyên đường cũ.
+        # mode == "cdp": mở/cập nhật cổng debug. launch() tự kiểm cổng, nên
+        # không probe thêm trên GUI thread (probe có thể chặn tới 1.5s — đúng
+        # lúc người dùng đang nhìn màn hình chờ).
         if not config.AUTO_LAUNCH_BROWSER:
             return
 
-        state = browser_launcher.probe_port()
-        if state["state"] == "ready":
-            self.append_log(f"[*] Cổng {config.CDP_PORT} đã sẵn sàng "
-                            f"({state['detail']}).", "system")
-            return
-        if state["state"] == "not_chromium":
-            self.append_log(f"[!] {state['detail']} Đổi CDP_PORT trong config.py "
-                            f"hoặc tắt tiến trình đang giữ cổng.", "error")
-            return
-
         def work():
-            ok, msg = browser_launcher.launch()
+            # Chỉ cần trình duyệt mở được là cho vào app. Cổng CDP được chờ
+            # ngắn để phiên quét chắc chắn dùng được, nhưng không chặn người
+            # dùng ở màn hình chờ khi cổng chưa/không mở.
+            wait_seconds = 6.0
+
+            def on_progress(remaining):
+                percent = int(round((1 - remaining / wait_seconds) * 100))
+                self.sig_startup_status.emit(
+                    "progress",
+                    f"Đang chờ trình duyệt khởi động · còn ~{max(1, int(remaining) + 1)}s",
+                    percent)
+
+            ok, msg = browser_launcher.launch(
+                wait_seconds=wait_seconds, on_progress=on_progress,
+                require_port=False)
             tag = "system" if ok else "error"
             symbol = "OK" if ok else "!"
             self.sig_ui_log.emit(f"[{symbol}] {msg}", tag)
+            self.sig_startup_status.emit("success" if ok else "error", msg, 100)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -268,6 +451,23 @@ class MainWindow(MSFluentWindow):
                 swallow("session_log.write", e)
         self.crawler_interface.append_log(message, tag)
     def _theme_file_path(self) -> str:
+        """Đường dẫn file lưu lựa chọn giao diện.
+
+        MỘT nơi duy nhất: HOME nếu ghi được, không thì cwd. `load_theme_setting`
+        đọc đúng đường dẫn này, nhờ vậy đọc và ghi không bao giờ lệch nhau.
+        """
+        return self._pick_theme_path()
+
+    def _pick_theme_path(self) -> str:
+        """Chọn file theme ghi được: HOME trước, cwd sau.
+
+        VÌ SAO PHẢI CHỌN MỘT CHỖ: bản trước `load_theme_setting` tự dò cả hai
+        đường dẫn và trả cái ĐẦU TIÊN đọc được, trong khi `_theme_file_path`
+        (dùng để ghi) trả cái ĐẦU TIÊN ghi được. Khi HOME có file cũ "dark"
+        nhưng không ghi được (sandbox, quyền), app ghi "light" vào cwd rồi lần
+        sau đọc HOME ra "dark" — người dùng đổi theme xong mở lại vẫn thấy cũ.
+        Đo được: HOME='dark', cwd='light', load_theme_setting() -> 'dark'.
+        """
         candidates = [
             os.path.join(os.path.expanduser("~"), ".xenforo_theme"),
             os.path.join(os.getcwd(), ".xenforo_theme"),
@@ -282,19 +482,17 @@ class MainWindow(MSFluentWindow):
         return os.path.join(os.getcwd(), ".xenforo_theme")
 
     def load_theme_setting(self) -> str:
-        candidates = [
-            os.path.join(os.path.expanduser("~"), ".xenforo_theme"),
-            os.path.join(os.getcwd(), ".xenforo_theme"),
-        ]
-        for path in candidates:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    t = f.read().strip()
-                    if t in ("light", "dark", "auto"):
-                        return t
-            except OSError:
-                pass
-        return "dark"
+        """Đọc theme đã lưu. Đọc ĐÚNG file mà save_theme_setting sẽ ghi."""
+        path = self._pick_theme_path()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+                if t in ("light", "dark", "auto"):
+                    return t
+        except OSError:
+            pass
+        # Chưa có file (lần chạy đầu) -> macOS Light là giao diện mặc định.
+        return "light"
 
     def save_theme_setting(self, theme_str: str):
         path = self._theme_file_path()
@@ -419,12 +617,15 @@ class MainWindow(MSFluentWindow):
         self.worker.signals.sig_log.connect(self.append_log)
         self.worker.signals.sig_stats.connect(self._on_stats_updated)
         self.worker.signals.sig_finished.connect(self._on_crawl_finished)
+        self.worker.signals.sig_author_found.connect(self._on_author_found)
+        self.worker.signals.sig_box_found.connect(self._on_box_found)
         self.worker.start()
 
     def stop_crawl(self):
         if not self.is_crawling():
             return
         self.stop_event.set()
+        self.crawler_interface.status_dot.set_state("warning")
         self.crawler_interface.lbl_state_title.setText("ĐANG DỪNG...")
         self.crawler_interface.lbl_state_detail.setText("Đang hủy các luồng tải và đóng tab...")
         self.crawler_interface.btn_stop.setEnabled(False)
@@ -440,22 +641,87 @@ class MainWindow(MSFluentWindow):
             ci.btn_stop.setEnabled(True)
             ci.progress_bar.setVisible(True)
             ci.progress_bar.start()
+            ci.status_dot.set_state("running")
             ci.lbl_state_title.setText("ĐANG QUÉT")
             ci.lbl_state_detail.setText(f"Tác vụ: {task_desc}...")
         else:
             ci.btn_stop.setEnabled(False)
             ci.progress_bar.stop()
             ci.progress_bar.setVisible(False)
+            ci.status_dot.set_state("ready")
             ci._check_inputs()
 
     def _on_stats_updated(self, images: int, videos: int, errors: int, detail: str):
         if self.is_crawling():
             self.crawler_interface.lbl_state_detail.setText(f"Tiến độ: {detail}")
 
+    def _on_author_found(self, author: str):
+        """Tự động điền tên chủ thớt vào ô Tên tác giả khi quét bài viết.
+
+        Khi user bấm "Quét 1 Thớt", engine tìm được chủ thớt và log dòng
+        "Đã định danh chính xác tác giả gốc: AUTHOR". Worker bắt dòng này,
+        phát signal → hàm này điền vào ô cmb_username để lần sau user có thể
+        bấm "Quét tác giả" ngay mà không cần gõ lại tên.
+        """
+        ci = self.crawler_interface
+        current = ci.cmb_username.currentText().strip()
+        # Chỉ điền nếu ô đang trống hoặc khác tên vừa tìm được
+        if author and author.lower() != current.lower():
+            # EditableComboBox của QFluentWidgets cần setText(), không phải setCurrentText()
+            ci.cmb_username.setText(author)
+
+    def _on_box_found(self, box_url: str):
+        """Tự động điền box URL vào ô Chuyên mục khi quét bài viết.
+
+        Khi user bấm "Quét 1 Thớt", engine đọc breadcrumb trên trang thread
+        để tìm box URL và log "Bài viết thuộc chuyên mục: URL". Worker bắt
+        dòng này → phát signal → hàm này điền vào ô cmb_box_url.
+        Nếu box chưa có trong preset, nút ➕ sẽ tự hiện.
+        """
+        ci = self.crawler_interface
+        current = ci.cmb_box_url.currentText().strip()
+        if box_url and box_url != current:
+            ci.cmb_box_url.setText(box_url)
+        # Cập nhật trạng thái nút thêm box
+        ci._update_add_box_button()
+
+    def add_current_box_to_presets(self):
+        """Thêm box URL hiện tại vào danh sách preset và lưu vào file."""
+        ci = self.crawler_interface
+        box_url = ci.cmb_box_url.currentText().strip()
+        if not box_url or "/box/" not in box_url:
+            return
+
+        # Kiểm tra đã có chưa
+        if ci.is_box_in_presets(box_url):
+            InfoBar.info(
+                title="Đã có sẵn",
+                content="Chuyên mục này đã nằm trong danh sách.",
+                parent=ci, position=InfoBarPosition.TOP_RIGHT, duration=2000)
+            return
+
+        # Thêm vào dropdown
+        ci.cmb_box_url.addItem(box_url)
+        ci.cmb_box_url.setCurrentText(box_url)
+
+        # Lưu vào file ~/.xenforo_boxes
+        try:
+            with open(ci._box_presets_file(), "a", encoding="utf-8") as f:
+                f.write(box_url + "\n")
+        except OSError as e:
+            swallow("save_box_preset", e)
+
+        ci.btn_add_box.setVisible(False)
+        InfoBar.success(
+            title="Đã thêm",
+            content="Đã lưu chuyên mục vào danh sách preset.",
+            parent=ci, position=InfoBarPosition.TOP_RIGHT, duration=3000)
+
     def _on_crawl_finished(self, is_stopped: bool, had_error: bool, detail: str):
         self._set_ui_running(False)
         ci = self.crawler_interface
         if is_stopped:
+            ci.status_dot.set_state("warning")
             ci.lbl_state_title.setText("ĐÃ DỪNG")
             ci.lbl_state_detail.setText(f"Đã dừng cưỡng bức. {detail}")
             InfoBar.warning(
@@ -466,6 +732,7 @@ class MainWindow(MSFluentWindow):
                 duration=3500
             )
         elif had_error:
+            ci.status_dot.set_state("error")
             ci.lbl_state_title.setText("CÓ LỖI")
             ci.lbl_state_detail.setText(f"Hoàn tất với một số lỗi. {detail}")
             InfoBar.error(
@@ -476,6 +743,7 @@ class MainWindow(MSFluentWindow):
                 duration=4500
             )
         else:
+            ci.status_dot.set_state("ready")
             ci.lbl_state_title.setText("SẴN SÀNG")
             ci.lbl_state_detail.setText(f"Đã đồng bộ xong! {detail}" if detail else "Đã hoàn thành xuất sắc!")
             InfoBar.success(
@@ -564,6 +832,8 @@ def main():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
+    apply_macos_typography(app)
+    apply_accent_color()
     window = MainWindow()
     window.show()
 

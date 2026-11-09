@@ -273,10 +273,14 @@ def copy_profile(src, dst, overwrite=False):
         return {"ok": False, "copied": 0, "skipped": [],
                 "reason": f"{dst} đã tồn tại (dùng overwrite=True để ghi đè)"}
 
-    ignore = shutil.ignore_patterns(
+    # Danh sách thư mục cache bỏ qua. Khai báo MỘT chỗ và dùng cho cả việc
+    # cắt `dirs` lẫn kiểm file: bản trước có thêm một biến `ignore` tạo bằng
+    # shutil.ignore_patterns nhưng KHÔNG truyền cho ai — os.walk ở dưới tự lọc
+    # thủ công, nên biến đó là code chết gây hiểu nhầm rằng có hai cơ chế.
+    _SKIP_DIRS = frozenset({
         "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
-        "DawnWebGPUCache", "Service Worker", "ShaderCache", "*.log", "Crashpad",
-    )
+        "DawnWebGPUCache", "Service Worker", "ShaderCache", "Crashpad",
+    })
 
     copied = 0
     skipped = []
@@ -286,10 +290,7 @@ def copy_profile(src, dst, overwrite=False):
             rel = os.path.relpath(root, src)
             target_dir = dst if rel == "." else os.path.join(dst, rel)
             # Bỏ qua thư mục cache ngay ở cấp thư mục
-            dirs[:] = [d for d in dirs
-                       if d not in ("Cache", "Code Cache", "GPUCache", "DawnCache",
-                                    "DawnGraphiteCache", "DawnWebGPUCache",
-                                    "Service Worker", "ShaderCache", "Crashpad")]
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             os.makedirs(target_dir, exist_ok=True)
             for name in files:
                 if name.endswith(".log"):

@@ -37,6 +37,34 @@ import config
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
 
+# Chỉ http/https được tải. URL bóc từ HTML của diễn đàn là dữ liệu BÊN NGOÀI:
+# một post chứa <img src="file:///C:/..."> đi qua urljoin vẫn giữ scheme tuyệt
+# đối (urljoin không đổi scheme của URL tuyệt đối), mà urllib.urlopen lại hỗ trợ
+# sẵn file:// — nội dung file local bị đọc rồi ghi thẳng vào thư mục tải.
+# Chặn MỘT chỗ ở tầng HTTP này thì cả fetch_one (HTML) lẫn download_to_file
+# (media) đều được che; đường Playwright không cần vì APIRequestContext chỉ
+# nhận http/https sẵn.
+ALLOWED_SCHEMES = ("http", "https")
+
+
+def _url_scheme(url):
+    """Scheme của url viết thường, hoặc "" khi không bóc được."""
+    try:
+        return urllib.parse.urlparse(url).scheme.lower()
+    except Exception:
+        return ""
+
+
+def scheme_ok(url):
+    """True nếu URL là http/https tuyệt đối."""
+    return _url_scheme(url) in ALLOWED_SCHEMES
+
+
+def _scheme_reject_error(url):
+    """Thông báo lỗi chuẩn cho URL bị chặn theo scheme."""
+    sch = _url_scheme(url) or "không có"
+    return f"scheme không hỗ trợ: {sch}"
+
 
 def _headers(referer=None, cookie=None, accept=None):
     h = {
@@ -90,6 +118,11 @@ def fetch_one(url, referer=None, cookie=None, timeout=None, as_text=True,
     timeout = timeout or getattr(config, "HTTP_TIMEOUT", 30)
     retries = getattr(config, "HTTP_RETRIES", 2) if retries is None else retries
     res = FetchResult(url)
+    if not scheme_ok(url):
+        # Từ chối trước khi chạm urlopen: đây là URL rác bóc từ HTML ngoài,
+        # thử lại cũng y như vậy.
+        res.error = _scheme_reject_error(url)
+        return res
     last = None
 
     for attempt in range(retries + 1):
@@ -283,6 +316,12 @@ def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
     tmp_path = save_path + ".tmp"
     t0 = time.perf_counter()
 
+    if not scheme_ok(url):
+        # Từ chối trước khi chạm urlopen: file:// là đường đọc file local,
+        # chặn ở đây thì nội dung không bao giờ tới được thư mục tải.
+        res.error = _scheme_reject_error(url)
+        return res
+
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     except Exception as e:
@@ -296,6 +335,12 @@ def download_to_file(url, save_path, referer=None, cookie=None, timeout=None,
         with urllib.request.urlopen(req, timeout=timeout) as r:
             res.status = r.status
             res.content_type = (r.headers.get("Content-Type") or "").lower()
+
+            # Nếu server trả HTML/plain text thay vì media (ví dụ: trang đăng nhập,
+            # Cloudflare, lỗi), xoá file tạm và báo lỗi. KHÔNG ghi cache.
+            if res.content_type.startswith("text/html") or res.content_type.startswith("text/plain"):
+                res.error = f"sai loại file: {res.content_type} (có thể trang lỗi/đăng nhập)"
+                return res
 
             # Khai báo quá lớn thì bỏ trước khi tải, đỡ tốn băng thông.
             declared = r.headers.get("Content-Length")

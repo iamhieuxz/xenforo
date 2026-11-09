@@ -4,8 +4,8 @@
 > Quy tắc làm việc: **mỗi bước một commit**, chạy `python audit_repro.py` + `python -m unittest test_v72`
 > trước và sau khi sửa. Chỉ tick khi có bằng chứng cụ thể ở cột "Bằng chứng".
 
-**Điểm hiện tại: 92/100** (gốc 64 → 78 → 86 → 88 → 91 → 92). **154 test xanh.**
-Tất cả 19 bước đã hoàn tất.
+**Điểm hiện tại: 95/100** (gốc 64 → 78 → 86 → 88 → 91 → 92 → 95). **164 test xanh.**
+Tất cả 22 bước đã hoàn tất.
 
 ---
 
@@ -32,6 +32,10 @@ Tất cả 19 bước đã hoàn tất.
 | 16 | Quét lại đầy đủ + báo cáo số tệp | 🔴 | P0 | [x] |
 | 17 | Làm lại giao diện (audit UX) | 🟠 | P1 | [x] |
 | 18 | Lọt phạm vi box khi phân trang | 🔴 | P0 | [x] |
+| 19 | BUG-1 — `_track_stats` cộng dồn (M2) | 🟡 | P0 | [x] |
+| 20 | BUG-2 — lưới sau `body()` cho chunked (H4 dư) | 🟠 | P1 | [x] |
+| 21 | SEC-1 — chặn scheme ngoài http/https | 🟢 | P2 | [x] |
+| 22 | ENV-1 — ghi nhận theme split-brain dưới sandbox | ⚪ | Ghi nhận | [x] |
 
 ---
 
@@ -750,20 +754,95 @@ thấy bao nhiêu media, trên đĩa có bao nhiêu tệp. Không thể phân bi
 đầy đủ và không có gì mới" với "lướt qua rồi bỏ". Đã sửa bằng báo cáo chi tiết,
 và thêm test khoá hành vi này lại.
 
-## Trạng thái kiểm chứng cuối
+---
+
+## Đợt 3 — Sửa theo CODE-REVIEW-REPORT.md (2026-11-08)
+
+Nguồn: [CODE-REVIEW-REPORT.md](CODE-REVIEW-REPORT.md). 3 bug + 1 ghi nhận môi trường.
+
+### Bước 19 — BUG-1: `_track_stats` cộng dồn thay vì ghi đè (M2)
+
+**Vấn đề:** `v72.py:_track_stats` dùng `=` gán số ảnh/video/lỗi từ mỗi dòng log.
+Khi nhiều thread báo cáo, giá trị CUỐI ghi đè các giá trị trước → UI hiển thị
+sai (thread 1: 8 ảnh, thread 2: 1 ảnh → UI hiện "1 ảnh" thay vì "9"). Bản
+PySide6 (`ui/worker.py:log_bridge`) đã cộng dồn `+=` từ trước; chỗ Tk chưa
+theo kịp.
+
+**Sửa:** 4 phép gán `=` → `+=` trong `_track_stats`. Counter reset mỗi phiên
+đã có sẵn ở `_launch()` (dòng 937) — cả hai đi cùng nhau, thiếu một là hỏng.
+
+**Bằng chứng:**
+```
+test_review_round3.TestStatsAccumulateAcrossThreads:
+  test_second_thread_does_not_erase_first  -> _n_image = 9 (8+1), không phải 1
+  test_errors_accumulate_too               -> _n_error = 5 (3+2)
+  test_launch_resets_counters            -> sau _launch: (0,0,0), _had_error=False
+```
+
+### Bước 20 — BUG-2: Lưới sau `body()` cho chunked response (H4 phần dư)
+
+**Vấn đề:** `_too_big()` chặn TRƯỚC `body()` dựa trên content-length. Server
+dùng chunked encoding (không header) thì lưới đó mù → file 2 GB vẫn được ghi
+đủ xuống đĩa dù MAX_FILE_MB=512. RAM spike trong lúc `body()` nạp không tránh
+được với Playwright 1.54 (không có streaming API), nhưng ít nhất KHÔNG ghi
+file vượt trần.
+
+**Sửa:** Thêm check `len(body) > limit` SAU `body()` trong `_fetch_browser`.
+Log rõ kích thước thật + trả `"FAILED"`, không ghi file.
+
+**Bằng chứng:**
+```
+test_review_round3.TestBrowserFallbackSizeCap:
+  test_chunked_oversize_body_is_rejected   -> body 2MB, trần 1MB → FAILED, không file
+  test_small_body_still_saved              -> body 100B, trần 1MB → OK, file tồn tại
+```
+
+### Bước 21 — SEC-1: Chặn scheme ngoài http/https ở tầng HTTP
+
+**Vấn đề:** URL bóc từ HTML diễn đàn (dữ liệu ngoài) qua `urljoin` giữ nguyên
+scheme tuyệt đối. `urllib.request.urlopen` hỗ trợ sẵn `file://` → post chứa
+`<img src="file:///C:/...">` đọc file local rồi ghi vào thư mục tải. Parser
+đã lọc `data:` URI nhưng không lọc scheme khác.
+
+**Sửa:** Thêm `ALLOWED_SCHEMES` + `scheme_ok()` trong `fast_fetch.py`. Chặn
+ở MỘT chỗ tầng HTTP — cả `fetch_one` (HTML) lẫn `download_to_file` (media)
+đều được che. Đường Playwright không cần (APIRequestContext chỉ nhận http/https).
+`_fetch_streaming` fast-fail cho URL rác (không ngủ backoff 3 lần).
+
+**Bằng chứng:**
+```
+test_review_round3.TestSchemeGuard:
+  test_scheme_ok_helper                    -> http/https=True, file/ftp/relative=False
+  test_fetch_one_rejects_file_url          -> res.ok=False, text=None, error chứa "scheme"
+  test_download_to_file_rejects_file_url   -> dst không tồn tại, error chứa "scheme"
+  test_streaming_fails_fast_on_scheme      -> < 1 giây (không backoff)
+  test_relative_url_rejected_not_crash     -> relative URL bị chặn sạch
+```
+
+### Bước 22 — ENV-1: Ghi nhận theme split-brain dưới DSH sandbox
+
+**Không phải regression.** Chứng minh bằng `repro_theme.py`:
+1. `~/.xenforo_theme` chứa `"dark"` từ lần chạy ngoài sandbox trước.
+2. Sandbox chặn ghi `~` → `_theme_file_path()` rơi về CWD → save ghi CWD,
+   load đọc HOME → split-brain.
+3. Redirect HOME sang thư mục trống → test PASS.
+4. Theme code không đổi so HEAD; 3 fix đợt này không chạm đường theme.
+
+**Đề xuất sửa khi có dịp:** thống nhất `load`/`save` cùng cơ chế chọn file,
+hoặc làm test hermetic (redirect theme path trong setUp).
+
+## Trạng thái kiểm chứng cuối (sau đợt 3)
 
 ```
-python audit_repro.py       -> Tất cả 4 lỗi P0 đã được sửa.        (exit 0)
-python -m unittest test_v72 -> Ran 117 tests, OK
-python _check_palette.py    -> Tat ca cap dat WCAG 2.2 AA.         (exit 0)
-python -c "import selectors, asyncio" -> default selectors OK
-
-Smoke test app thật:
-  app khởi động OK
-  3 nút bấm không crash
-  đổi theme khi đang quét: scan=disabled | stop=normal
-  phím tắt còn: True
-  on_close: stop_event set=True, root destroyed=True, thread joined=True
+python -m unittest test_v72                                          -> Ran 154 tests, OK
+python -m unittest test_review_round3                                -> Ran 10 tests, OK
+python -m unittest test_review_round3 test_review_round2 \
+                   test_review_fixes test_critical_fixes             -> Ran 73 tests, OK
+python -m unittest test_gui_fluent test_first_login \
+                   test_persistent_mode                              -> 55/56 OK
+   (1 fail = ENV-1 theme, lỗi môi trường sandbox — pass khi HOME sạch)
+python _check_palette.py                                             -> Tat ca cap dat WCAG 2.2 AA.
+python audit_repro.py                                                -> exit 0
 ```
 
 ## Việc còn lại (không nằm trong phạm vi đã làm)
@@ -771,5 +850,6 @@ Smoke test app thật:
 | Việc | Vì sao chưa làm |
 |---|---|
 | Streaming download thật | Playwright 1.54 không có API stream; cần đổi sang HTTP client riêng + tự quản lý cookie phiên — thay đổi kiến trúc |
-| Bộ đếm thống kê riêng thay bóc regex log | Cần sửa `engine` để trả stats qua callback; hiện chỉ hiển thị số của thread gần nhất |
+| ARCH-1: Structured stats thay bóc regex log | Cần sửa `engine` để trả stats qua callback — refactor lớn, tách khỏi đợt vá lỗi |
+| ENV-1: Theme split-brain dưới home read-only | Lỗi môi trường sandbox, không phải regression; cần thống nhất load/save path hoặc hermetic test |
 | Resume checkpoint | Tính năng mới, không phải sửa lỗi |

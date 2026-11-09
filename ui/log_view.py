@@ -6,7 +6,7 @@ Tách từ gui_fluent.py (P2.1).
 import re
 from typing import Optional
 
-from PySide6.QtGui import QFont, QTextCursor, QTextCharFormat, QTextBlockFormat, QColor
+from PySide6.QtGui import QFont, QTextCharFormat, QColor
 
 import session_log
 

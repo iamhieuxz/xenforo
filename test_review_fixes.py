@@ -79,6 +79,38 @@ class TestCdpPortControl(unittest.TestCase):
             srv.shutdown()
             srv.server_close()
 
+    def test_launch_without_port_requirement_passes_on_conflict(self):
+        """Lúc khởi động: cổng bị chiếm vẫn cho vào app, không chặn màn hình chờ."""
+        import http.server
+
+        class Plain(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html>not cdp</html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        try:
+            srv = http.server.HTTPServer(("127.0.0.1", config.CDP_PORT), Plain)
+        except OSError as e:
+            self.skipTest(f"cổng {config.CDP_PORT} đang bận: {e}")
+            return
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        try:
+            ok, msg = B.launch(require_port=False)
+            self.assertTrue(ok, f"chỉ cần browser là đủ, không được chặn: {msg}")
+            self.assertIn("tiếp tục", msg.lower())
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
     def test_probe_accepts_real_chromium_json(self):
         """Server trả /json/version đúng chuẩn Chromium -> ready."""
         import http.server
